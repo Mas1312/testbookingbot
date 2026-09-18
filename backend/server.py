@@ -1,13 +1,15 @@
+import hashlib
 import os
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from aiogram import Bot
 from aiogram.types import Update
 
 import database
-from config import SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, WEBHOOK_SECRET, WEBAPP_URL, BOT_TOKEN
-from bot import bot as tg_bot, dp as tg_dp
+from config import SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, WEBAPP_URL, BOT_TOKEN
+from bot import dp as tg_dp
 
 app = FastAPI(title="Booking Mini App API")
 
@@ -76,10 +78,21 @@ def check_owner(owner_tg_id: int):
 
 
 # Схема БД уже мультитенантная (таблица businesses + business_id у services/bookings),
-# но онбординг новых бизнесов ещё не сделан (это следующий этап) — поэтому пока сервер
-# всегда обслуживает один бизнес, привязанный к BOT_TOKEN из .env, и резолвит его id
-# один раз при старте. Когда появится онбординг, это заменится на резолв per-request.
+# но онбординг новых бизнесов ещё не сделан (это следующий этап) — поэтому Mini App API
+# (/api/...) пока всегда обслуживает один бизнес, привязанный к BOT_TOKEN из .env.
+# Вебхуки же (этот файл, секция ниже) уже честно мультибизнесовые: сервер поднимает
+# отдельный Bot-инстанс и вебхук для КАЖДОГО бизнеса, найденного в БД.
 CURRENT_BUSINESS_ID: int | None = None
+
+# business_id -> aiogram.Bot, создаются один раз при старте и переиспользуются
+# на каждый входящий вебхук-запрос (чтобы не открывать новую aiohttp-сессию на запрос).
+_bots_by_business: dict[int, Bot] = {}
+
+
+def _webhook_secret_for(bot_token: str) -> str:
+    """Детерминированный секрет для проверки X-Telegram-Bot-Api-Secret-Token,
+    свой у каждого бота, ничего дополнительно хранить/генерировать не нужно."""
+    return hashlib.sha256(bot_token.encode()).hexdigest()[:32]
 
 
 @app.on_event("startup")
@@ -91,25 +104,33 @@ def on_startup():
 
 
 @app.on_event("startup")
-async def on_startup_webhook():
-    """В облаке (USE_WEBHOOK=true) регистрируем вебхук у Telegram при каждом старте
-    процесса — так не нужен отдельный always-on процесс для polling (bot.py),
-    что важно для бесплатных хостингов вроде Render, где живёт только web-сервис."""
-    if USE_WEBHOOK:
-        await tg_bot.set_webhook(
-            url=f"{WEBAPP_URL}/webhook",
-            secret_token=WEBHOOK_SECRET or None,
+async def on_startup_webhooks():
+    """В облаке (USE_WEBHOOK=true) поднимаем вебхук для каждого бизнеса из БД —
+    так не нужен отдельный always-on процесс на бизнес для polling, что важно для
+    бесплатных хостингов вроде Render, где живёт только один web-сервис."""
+    if not USE_WEBHOOK:
+        return
+    for business in database.get_all_businesses():
+        bot_instance = Bot(token=business["bot_token"])
+        _bots_by_business[business["id"]] = bot_instance
+        await bot_instance.set_webhook(
+            url=f"{WEBAPP_URL}/webhook/{business['id']}",
+            secret_token=_webhook_secret_for(business["bot_token"]),
             drop_pending_updates=True,
         )
 
 
-@app.post("/webhook")
-async def telegram_webhook(request: Request):
-    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+@app.post("/webhook/{business_id}")
+async def telegram_webhook(business_id: int, request: Request):
+    bot_instance = _bots_by_business.get(business_id)
+    if not bot_instance:
+        raise HTTPException(status_code=404, detail="Неизвестный бизнес")
+    expected_secret = _webhook_secret_for(bot_instance.token)
+    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != expected_secret:
         raise HTTPException(status_code=403, detail="Неверный секрет вебхука")
     data = await request.json()
-    update = Update.model_validate(data, context={"bot": tg_bot})
-    await tg_dp.feed_update(tg_bot, update)
+    update = Update.model_validate(data, context={"bot": bot_instance})
+    await tg_dp.feed_update(bot_instance, update, business_id=business_id)
     return {"ok": True}
 
 

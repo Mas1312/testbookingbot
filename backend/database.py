@@ -81,34 +81,7 @@ def init_db():
 
 # ---------- Бизнесы ----------
 
-def get_or_create_business_from_env(bot_token: str, owner_tg_id: int, business_name: str):
-    """Гарантирует, что для текущего BOT_TOKEN из .env есть запись в businesses —
-    временный мост, пока онбординг новых бизнесов не сделан отдельным шагом (этап 4).
-    Если бизнеса с таким токеном ещё нет — создаёт его с демонстрационными позициями."""
-    conn = get_connection()
-    row = conn.execute("SELECT * FROM businesses WHERE bot_token = ?", (bot_token,)).fetchone()
-    if row:
-        conn.close()
-        return dict(row)
-
-    cur = conn.execute(
-        """
-        INSERT INTO businesses
-            (owner_tg_id, name, bot_token, bg_color, surface_color, text_color, hint_color,
-             primary_color, primary_text_color, danger_color, success_color, radius)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            owner_tg_id, business_name, bot_token,
-            DEFAULT_THEME["bg_color"], DEFAULT_THEME["surface_color"],
-            DEFAULT_THEME["text_color"], DEFAULT_THEME["hint_color"],
-            DEFAULT_THEME["primary_color"], DEFAULT_THEME["primary_text_color"],
-            DEFAULT_THEME["danger_color"], DEFAULT_THEME["success_color"],
-            DEFAULT_THEME["radius"],
-        ),
-    )
-    business_id = cur.lastrowid
-
+def _seed_demo_services(conn, business_id: int):
     demo_services = [
         ("Стрижка мужская", 1200, 30, "slot", 1),
         ("Аренда сапборда (1 час)", 1500, 60, "slot", 2),
@@ -121,10 +94,53 @@ def get_or_create_business_from_env(bot_token: str, owner_tg_id: int, business_n
         [(business_id, *s) for s in demo_services],
     )
 
+
+def create_business(owner_tg_id: int, name: str, bot_token: str):
+    """Заводит новый бизнес (свой Telegram-бот, свой владелец) с демо-позициями
+    и темой по умолчанию. Пока вызывается вручную/скриптом — полноценный
+    онбординг через диалог с ботом будет отдельным этапом."""
+    conn = get_connection()
+    cur = conn.execute(
+        """
+        INSERT INTO businesses
+            (owner_tg_id, name, bot_token, bg_color, surface_color, text_color, hint_color,
+             primary_color, primary_text_color, danger_color, success_color, radius)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            owner_tg_id, name, bot_token,
+            DEFAULT_THEME["bg_color"], DEFAULT_THEME["surface_color"],
+            DEFAULT_THEME["text_color"], DEFAULT_THEME["hint_color"],
+            DEFAULT_THEME["primary_color"], DEFAULT_THEME["primary_text_color"],
+            DEFAULT_THEME["danger_color"], DEFAULT_THEME["success_color"],
+            DEFAULT_THEME["radius"],
+        ),
+    )
+    business_id = cur.lastrowid
+    _seed_demo_services(conn, business_id)
     conn.commit()
     row = conn.execute("SELECT * FROM businesses WHERE id = ?", (business_id,)).fetchone()
     conn.close()
     return dict(row)
+
+
+def get_or_create_business_from_env(bot_token: str, owner_tg_id: int, business_name: str):
+    """Гарантирует, что для текущего BOT_TOKEN из .env есть запись в businesses —
+    временный мост, пока онбординг новых бизнесов не сделан отдельным шагом (этап 4).
+    Если бизнеса с таким токеном ещё нет — создаёт его с демонстрационными позициями."""
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM businesses WHERE bot_token = ?", (bot_token,)).fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return create_business(owner_tg_id, business_name, bot_token)
+
+
+def get_all_businesses():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM businesses ORDER BY id").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_business(business_id: int):
