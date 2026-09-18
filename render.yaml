@@ -18,3 +18,5 @@ services:
         value: "true"
       - key: WEBHOOK_SECRET
         generateValue: true
+      - key: PYTHON_VERSION
+        value: "3.12.7"
