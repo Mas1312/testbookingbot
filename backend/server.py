@@ -34,6 +34,7 @@ async def no_cache_static(request, call_next):
 
 
 class BookingRequest(BaseModel):
+    business_id: int
     service_id: int
     date: str | None = None
     time: str | None = None
@@ -44,6 +45,7 @@ class BookingRequest(BaseModel):
 
 
 class ServiceRequest(BaseModel):
+    business_id: int
     name: str
     price: int
     duration_min: int = 0
@@ -53,11 +55,13 @@ class ServiceRequest(BaseModel):
 
 
 class StatusRequest(BaseModel):
+    business_id: int
     status: str               # 'new' | 'done' | 'cancelled'
     owner_tg_id: int
 
 
 class ThemeRequest(BaseModel):
+    business_id: int
     bg_color: str
     surface_color: str
     text_color: str
@@ -70,19 +74,30 @@ class ThemeRequest(BaseModel):
     owner_tg_id: int
 
 
-def check_owner(owner_tg_id: int):
-    """Простая проверка для прототипа: сверяем присланный tg_id с тем, что в .env.
+def resolve_business(business_id: int | None):
+    """Определяет, какой бизнес обслуживать. Если business_id не передан (например,
+    открыли сервер напрямую в браузере без ?business_id=... из ссылки бота) — используем
+    бизнес по умолчанию (тот, что привязан к BOT_TOKEN из .env), чтобы старые ссылки
+    и локальная разработка без параметра продолжали работать."""
+    resolved_id = business_id if business_id is not None else DEFAULT_BUSINESS_ID
+    business = database.get_business(resolved_id) if resolved_id else None
+    if not business:
+        raise HTTPException(status_code=404, detail="Бизнес не найден")
+    return business
+
+
+def check_owner(business: dict, owner_tg_id: int):
+    """Простая проверка для прототипа: сверяем присланный tg_id с owner_tg_id бизнеса.
     Для продакшена стоит валидировать initData от Telegram по HMAC, а не просто верить id."""
-    if OWNER_TG_ID == 0 or owner_tg_id != OWNER_TG_ID:
+    if not owner_tg_id or owner_tg_id != business["owner_tg_id"]:
         raise HTTPException(status_code=403, detail="Доступно только владельцу")
 
 
-# Схема БД уже мультитенантная (таблица businesses + business_id у services/bookings),
-# но онбординг новых бизнесов ещё не сделан (это следующий этап) — поэтому Mini App API
-# (/api/...) пока всегда обслуживает один бизнес, привязанный к BOT_TOKEN из .env.
-# Вебхуки же (этот файл, секция ниже) уже честно мультибизнесовые: сервер поднимает
-# отдельный Bot-инстанс и вебхук для КАЖДОГО бизнеса, найденного в БД.
-CURRENT_BUSINESS_ID: int | None = None
+# Бизнес по умолчанию — тот, что привязан к BOT_TOKEN из .env. Используется, когда
+# запрос пришёл без явного business_id (см. resolve_business). Резолвится один раз
+# при старте, но какой бизнес обслуживать конкретный запрос — решает resolve_business,
+# а не эта переменная напрямую.
+DEFAULT_BUSINESS_ID: int | None = None
 
 # business_id -> aiogram.Bot, создаются один раз при старте и переиспользуются
 # на каждый входящий вебхук-запрос (чтобы не открывать новую aiohttp-сессию на запрос).
@@ -97,10 +112,10 @@ def _webhook_secret_for(bot_token: str) -> str:
 
 @app.on_event("startup")
 def on_startup():
-    global CURRENT_BUSINESS_ID
+    global DEFAULT_BUSINESS_ID
     database.init_db()
     business = database.get_or_create_business_from_env(BOT_TOKEN, OWNER_TG_ID, BUSINESS_NAME)
-    CURRENT_BUSINESS_ID = business["id"]
+    DEFAULT_BUSINESS_ID = business["id"]
 
 
 @app.on_event("startup")
@@ -137,17 +152,20 @@ async def telegram_webhook(business_id: int, request: Request):
 # ---------- Публичное API (для клиентов) ----------
 
 @app.get("/api/config")
-def api_config():
+def api_config(business_id: int | None = None):
+    business = resolve_business(business_id)
     return {
-        "business_name": BUSINESS_NAME,
-        "owner_tg_id": OWNER_TG_ID,
-        "theme": database.get_theme(CURRENT_BUSINESS_ID),
+        "business_id": business["id"],
+        "business_name": business["name"],
+        "owner_tg_id": business["owner_tg_id"],
+        "theme": database.get_theme(business["id"]),
     }
 
 
 @app.get("/api/services")
-def api_services():
-    return database.get_services(CURRENT_BUSINESS_ID, active_only=True)
+def api_services(business_id: int | None = None):
+    business = resolve_business(business_id)
+    return database.get_services(business["id"], active_only=True)
 
 
 @app.get("/api/dates")
@@ -156,23 +174,25 @@ def api_dates():
 
 
 @app.get("/api/slots")
-def api_slots(service_id: int, date: str):
-    service = database.get_service(CURRENT_BUSINESS_ID, service_id)
+def api_slots(service_id: int, date: str, business_id: int | None = None):
+    business = resolve_business(business_id)
+    service = database.get_service(business["id"], service_id)
     if not service:
         raise HTTPException(status_code=404, detail="Позиция не найдена")
-    return database.get_available_slots(CURRENT_BUSINESS_ID, service_id, date)
+    return database.get_available_slots(business["id"], service_id, date)
 
 
 @app.post("/api/book")
 def api_book(booking: BookingRequest):
-    service = database.get_service(CURRENT_BUSINESS_ID, booking.service_id)
+    business = resolve_business(booking.business_id)
+    service = database.get_service(business["id"], booking.service_id)
     if not service:
         raise HTTPException(status_code=404, detail="Позиция не найдена")
 
     if service["type"] == "slot":
         if not booking.date or not booking.time:
             raise HTTPException(status_code=400, detail="Для этой позиции нужно выбрать дату и время")
-        free_slots = database.get_available_slots(CURRENT_BUSINESS_ID, booking.service_id, booking.date)
+        free_slots = database.get_available_slots(business["id"], booking.service_id, booking.date)
         if booking.time not in free_slots:
             raise HTTPException(status_code=409, detail="Это время уже занято, выберите другое")
         date, time = booking.date, booking.time
@@ -181,7 +201,7 @@ def api_book(booking: BookingRequest):
         date, time = None, None
 
     booking_id = database.create_booking(
-        CURRENT_BUSINESS_ID, booking.service_id, date, time, booking.client_name, booking.client_tg_id,
+        business["id"], booking.service_id, date, time, booking.client_name, booking.client_tg_id,
         quantity=max(1, booking.quantity), comment=booking.comment,
     )
     return {
@@ -198,58 +218,65 @@ def api_book(booking: BookingRequest):
 # ---------- Админ-API (только для владельца, проверяется owner_tg_id) ----------
 
 @app.get("/api/admin/services")
-def admin_list_services(owner_tg_id: int):
-    check_owner(owner_tg_id)
-    return database.get_services(CURRENT_BUSINESS_ID, active_only=False)
+def admin_list_services(owner_tg_id: int, business_id: int):
+    business = resolve_business(business_id)
+    check_owner(business, owner_tg_id)
+    return database.get_services(business["id"], active_only=False)
 
 
 @app.post("/api/admin/services")
 def admin_create_service(payload: ServiceRequest):
-    check_owner(payload.owner_tg_id)
-    new_id = database.create_service(CURRENT_BUSINESS_ID, payload.name, payload.price, payload.duration_min, payload.type)
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.owner_tg_id)
+    new_id = database.create_service(business["id"], payload.name, payload.price, payload.duration_min, payload.type)
     return {"ok": True, "id": new_id}
 
 
 @app.put("/api/admin/services/{service_id}")
 def admin_update_service(service_id: int, payload: ServiceRequest):
-    check_owner(payload.owner_tg_id)
-    if not database.get_service(CURRENT_BUSINESS_ID, service_id):
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.owner_tg_id)
+    if not database.get_service(business["id"], service_id):
         raise HTTPException(status_code=404, detail="Позиция не найдена")
     database.update_service(
-        CURRENT_BUSINESS_ID, service_id, payload.name, payload.price, payload.duration_min, payload.type, payload.is_active
+        business["id"], service_id, payload.name, payload.price, payload.duration_min, payload.type, payload.is_active
     )
     return {"ok": True}
 
 
 @app.delete("/api/admin/services/{service_id}")
-def admin_delete_service(service_id: int, owner_tg_id: int):
-    check_owner(owner_tg_id)
-    if not database.get_service(CURRENT_BUSINESS_ID, service_id):
+def admin_delete_service(service_id: int, owner_tg_id: int, business_id: int):
+    business = resolve_business(business_id)
+    check_owner(business, owner_tg_id)
+    if not database.get_service(business["id"], service_id):
         raise HTTPException(status_code=404, detail="Позиция не найдена")
-    database.delete_service(CURRENT_BUSINESS_ID, service_id)
+    database.delete_service(business["id"], service_id)
     return {"ok": True}
 
 
 @app.get("/api/admin/bookings")
-def admin_list_bookings(owner_tg_id: int, status: str | None = None):
-    check_owner(owner_tg_id)
-    return database.get_all_bookings(CURRENT_BUSINESS_ID, status=status)
+def admin_list_bookings(owner_tg_id: int, business_id: int, status: str | None = None):
+    business = resolve_business(business_id)
+    check_owner(business, owner_tg_id)
+    return database.get_all_bookings(business["id"], status=status)
 
 
 @app.patch("/api/admin/bookings/{booking_id}")
 def admin_update_booking(booking_id: int, payload: StatusRequest):
-    check_owner(payload.owner_tg_id)
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.owner_tg_id)
     if payload.status not in ("new", "done", "cancelled"):
         raise HTTPException(status_code=400, detail="Неверный статус")
-    database.update_booking_status(CURRENT_BUSINESS_ID, booking_id, payload.status)
+    database.update_booking_status(business["id"], booking_id, payload.status)
     return {"ok": True}
 
 
 @app.put("/api/admin/theme")
 def admin_update_theme(payload: ThemeRequest):
-    check_owner(payload.owner_tg_id)
-    database.update_theme(CURRENT_BUSINESS_ID, payload.model_dump(exclude={"owner_tg_id"}))
-    return {"ok": True, "theme": database.get_theme(CURRENT_BUSINESS_ID)}
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.owner_tg_id)
+    database.update_theme(business["id"], payload.model_dump(exclude={"owner_tg_id", "business_id"}))
+    return {"ok": True, "theme": database.get_theme(business["id"])}
 
 
 # Отдаём саму Mini App (index.html, style.css, app.js) как статику.

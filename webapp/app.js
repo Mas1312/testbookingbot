@@ -33,7 +33,15 @@ tg.expand();
 
 const API_BASE = "";
 
+// Какой бизнес обслуживать — приходит в URL мини-аппы как ?business_id=...
+// (см. backend/bot.py: именно так строится ссылка в кнопке «Записаться» под каждый бот).
+// Если параметра нет (например, зашли на сервер напрямую в браузере) — бэкенд сам
+// подставит бизнес по умолчанию (см. resolve_business в server.py).
+const urlParams = new URLSearchParams(location.search);
+const businessIdParam = urlParams.get("business_id");
+
 const state = {
+  businessId: businessIdParam ? Number(businessIdParam) : null,
   config: { business_name: "Запись онлайн", owner_tg_id: 0 },
   isOwner: false,
   myTgId: null,
@@ -91,6 +99,15 @@ async function api(path, options = {}) {
     throw new Error(err.detail || "Ошибка сервера");
   }
   return res.json();
+}
+
+// Собирает query-строку, пропуская пустые/отсутствующие значения.
+function qs(params) {
+  const usp = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== null && v !== undefined && v !== "") usp.set(k, v);
+  });
+  return usp.toString();
 }
 
 function formatDateLabel(isoDate) {
@@ -165,7 +182,7 @@ function switchMode(mode) {
 // ======================================================================
 
 async function loadServices() {
-  state.services = await api("/api/services");
+  state.services = await api(`/api/services?${qs({ business_id: state.businessId })}`);
   el("business-title").textContent = state.config.business_name || "Выберите услугу";
   const list = el("services-list");
   list.innerHTML = "";
@@ -221,7 +238,11 @@ function selectDate(date, pillEl) {
 }
 
 async function loadSlots() {
-  const slots = await api(`/api/slots?service_id=${state.selectedService.id}&date=${state.selectedDate}`);
+  const slots = await api(`/api/slots?${qs({
+    service_id: state.selectedService.id,
+    date: state.selectedDate,
+    business_id: state.businessId,
+  })}`);
   const list = el("slots-list");
   const noSlotsMsg = el("no-slots-msg");
   list.innerHTML = "";
@@ -308,6 +329,7 @@ async function submitBooking() {
     const result = await api("/api/book", {
       method: "POST",
       body: JSON.stringify({
+        business_id: state.businessId,
         service_id: s.id,
         date: s.type === "slot" ? state.selectedDate : null,
         time: s.type === "slot" ? state.selectedTime : null,
@@ -387,8 +409,11 @@ document.querySelectorAll(".filter-pill").forEach((pill) => {
 const statusLabels = { new: "Новая", done: "Выполнена", cancelled: "Отменена" };
 
 async function loadAdminOrders() {
-  const q = state.admin.statusFilter ? `&status=${state.admin.statusFilter}` : "";
-  const orders = await api(`/api/admin/bookings?owner_tg_id=${state.myTgId}${q}`);
+  const orders = await api(`/api/admin/bookings?${qs({
+    owner_tg_id: state.myTgId,
+    business_id: state.businessId,
+    status: state.admin.statusFilter,
+  })}`);
   state.admin.orders = orders;
   const list = el("orders-list");
   const noOrdersMsg = el("no-orders-msg");
@@ -440,7 +465,7 @@ function escapeHtml(str) {
 async function updateOrderStatus(id, status) {
   await api(`/api/admin/bookings/${id}`, {
     method: "PATCH",
-    body: JSON.stringify({ status, owner_tg_id: state.myTgId }),
+    body: JSON.stringify({ status, owner_tg_id: state.myTgId, business_id: state.businessId }),
   });
   loadAdminOrders();
 }
@@ -450,7 +475,10 @@ async function updateOrderStatus(id, status) {
 // ======================================================================
 
 async function loadAdminServices() {
-  state.admin.services = await api(`/api/admin/services?owner_tg_id=${state.myTgId}`);
+  state.admin.services = await api(`/api/admin/services?${qs({
+    owner_tg_id: state.myTgId,
+    business_id: state.businessId,
+  })}`);
   const list = el("admin-services-list");
   list.innerHTML = "";
 
@@ -510,7 +538,7 @@ el("save-service-btn").addEventListener("click", async () => {
 
   const payload = {
     name, price, duration_min: duration, type,
-    is_active: true, owner_tg_id: state.myTgId,
+    is_active: true, owner_tg_id: state.myTgId, business_id: state.businessId,
   };
 
   try {
@@ -535,7 +563,10 @@ el("save-service-btn").addEventListener("click", async () => {
 el("delete-service-btn").addEventListener("click", async () => {
   if (!state.admin.editingServiceId) return;
   if (!confirm("Удалить эту позицию? Это действие необратимо.")) return;
-  await api(`/api/admin/services/${state.admin.editingServiceId}?owner_tg_id=${state.myTgId}`, {
+  await api(`/api/admin/services/${state.admin.editingServiceId}?${qs({
+    owner_tg_id: state.myTgId,
+    business_id: state.businessId,
+  })}`, {
     method: "DELETE",
   });
   showAdminScreen("services");
@@ -598,7 +629,7 @@ function fillThemeForm(theme) {
 }
 
 function readThemeForm() {
-  const theme = { owner_tg_id: state.myTgId };
+  const theme = { owner_tg_id: state.myTgId, business_id: state.businessId };
   Object.keys(THEME_VAR_MAP).forEach((key) => {
     theme[key] = el(`theme-${key}`).value;
   });
@@ -647,7 +678,8 @@ el("reset-theme-btn").addEventListener("click", () => {
 // ======================================================================
 
 async function init() {
-  state.config = await api("/api/config");
+  state.config = await api(`/api/config?${qs({ business_id: state.businessId })}`);
+  state.businessId = state.config.business_id; // синхронизируем с тем, что реально отдал бэкенд (если в URL параметра не было)
   applyTheme(state.config.theme);
   applyBrand(state.config.business_name);
 

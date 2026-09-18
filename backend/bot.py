@@ -26,7 +26,7 @@ bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 async def cmd_start(message: Message, business_id: int):
     business = database.get_business(business_id)
     business_name = business["name"] if business else "Записи"
-    webapp_url = f"{WEBAPP_URL}/?biz={business_id}"
+    webapp_url = f"{WEBAPP_URL}/?business_id={business_id}"
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
