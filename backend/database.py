@@ -10,7 +10,10 @@ def get_connection():
 
 
 def init_db():
-    """Создаёт таблицы, если их ещё нет, и наполняет примером позиций при первом запуске.
+    """Создаёт таблицы, если их ещё нет.
+
+    Схема мультитенантная: одна база обслуживает несколько бизнесов (у каждого свой
+    Telegram-бот и свой владелец), всё завязано на businesses.id.
 
     Позиция (services) бывает двух типов:
       - type='slot'  — требует выбора даты и времени (стрижка, аренда сапборда, консультация)
@@ -21,20 +24,12 @@ def init_db():
     cur = conn.cursor()
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS services (
+        CREATE TABLE IF NOT EXISTS businesses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_tg_id INTEGER NOT NULL,
             name TEXT NOT NULL,
-            price INTEGER NOT NULL,
-            duration_min INTEGER NOT NULL DEFAULT 0,
-            type TEXT NOT NULL DEFAULT 'slot',   -- 'slot' или 'order'
-            is_active INTEGER NOT NULL DEFAULT 1,
-            sort_order INTEGER NOT NULL DEFAULT 0
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS theme_settings (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
+            bot_token TEXT NOT NULL UNIQUE,
+            bot_username TEXT,
             bg_color TEXT NOT NULL,
             surface_color TEXT NOT NULL,
             text_color TEXT NOT NULL,
@@ -43,13 +38,29 @@ def init_db():
             primary_text_color TEXT NOT NULL,
             danger_color TEXT NOT NULL,
             success_color TEXT NOT NULL,
-            radius INTEGER NOT NULL
+            radius INTEGER NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            price INTEGER NOT NULL,
+            duration_min INTEGER NOT NULL DEFAULT 0,
+            type TEXT NOT NULL DEFAULT 'slot',   -- 'slot' или 'order'
+            is_active INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (business_id) REFERENCES businesses (id)
         )
     """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS bookings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER NOT NULL,
             service_id INTEGER NOT NULL,
             client_name TEXT,
             client_tg_id INTEGER,
@@ -59,71 +70,102 @@ def init_db():
             comment TEXT,
             status TEXT DEFAULT 'new', -- new -> done / cancelled
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (business_id) REFERENCES businesses (id),
             FOREIGN KEY (service_id) REFERENCES services (id)
         )
     """)
-
-    # Сидируем демонстрационные позиции разных типов, только если таблица пустая —
-    # чтобы сразу было видно, что подходит и под запись по времени, и под разовый заказ.
-    cur.execute("SELECT COUNT(*) FROM services")
-    if cur.fetchone()[0] == 0:
-        demo_services = [
-            ("Стрижка мужская", 1200, 30, "slot", 1),
-            ("Аренда сапборда (1 час)", 1500, 60, "slot", 2),
-            ("Консультация специалиста", 2000, 45, "slot", 3),
-            ("Шаурма классическая", 350, 0, "order", 4),
-            ("Доставка на дом", 500, 0, "order", 5),
-        ]
-        cur.executemany(
-            "INSERT INTO services (name, price, duration_min, type, sort_order) VALUES (?, ?, ?, ?, ?)",
-            demo_services,
-        )
-
-    cur.execute("SELECT COUNT(*) FROM theme_settings")
-    if cur.fetchone()[0] == 0:
-        cur.execute(
-            """
-            INSERT INTO theme_settings
-                (id, bg_color, surface_color, text_color, hint_color,
-                 primary_color, primary_text_color, danger_color, success_color, radius)
-            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                DEFAULT_THEME["bg_color"], DEFAULT_THEME["surface_color"],
-                DEFAULT_THEME["text_color"], DEFAULT_THEME["hint_color"],
-                DEFAULT_THEME["primary_color"], DEFAULT_THEME["primary_text_color"],
-                DEFAULT_THEME["danger_color"], DEFAULT_THEME["success_color"],
-                DEFAULT_THEME["radius"],
-            ),
-        )
 
     conn.commit()
     conn.close()
 
 
-# ---------- Оформление (тема) ----------
+# ---------- Бизнесы ----------
 
-def get_theme():
+def get_or_create_business_from_env(bot_token: str, owner_tg_id: int, business_name: str):
+    """Гарантирует, что для текущего BOT_TOKEN из .env есть запись в businesses —
+    временный мост, пока онбординг новых бизнесов не сделан отдельным шагом (этап 4).
+    Если бизнеса с таким токеном ещё нет — создаёт его с демонстрационными позициями."""
     conn = get_connection()
-    row = conn.execute("SELECT * FROM theme_settings WHERE id = 1").fetchone()
+    row = conn.execute("SELECT * FROM businesses WHERE bot_token = ?", (bot_token,)).fetchone()
+    if row:
+        conn.close()
+        return dict(row)
+
+    cur = conn.execute(
+        """
+        INSERT INTO businesses
+            (owner_tg_id, name, bot_token, bg_color, surface_color, text_color, hint_color,
+             primary_color, primary_text_color, danger_color, success_color, radius)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            owner_tg_id, business_name, bot_token,
+            DEFAULT_THEME["bg_color"], DEFAULT_THEME["surface_color"],
+            DEFAULT_THEME["text_color"], DEFAULT_THEME["hint_color"],
+            DEFAULT_THEME["primary_color"], DEFAULT_THEME["primary_text_color"],
+            DEFAULT_THEME["danger_color"], DEFAULT_THEME["success_color"],
+            DEFAULT_THEME["radius"],
+        ),
+    )
+    business_id = cur.lastrowid
+
+    demo_services = [
+        ("Стрижка мужская", 1200, 30, "slot", 1),
+        ("Аренда сапборда (1 час)", 1500, 60, "slot", 2),
+        ("Консультация специалиста", 2000, 45, "slot", 3),
+        ("Шаурма классическая", 350, 0, "order", 4),
+        ("Доставка на дом", 500, 0, "order", 5),
+    ]
+    conn.executemany(
+        "INSERT INTO services (business_id, name, price, duration_min, type, sort_order) VALUES (?, ?, ?, ?, ?, ?)",
+        [(business_id, *s) for s in demo_services],
+    )
+
+    conn.commit()
+    row = conn.execute("SELECT * FROM businesses WHERE id = ?", (business_id,)).fetchone()
     conn.close()
-    return dict(row) if row else dict(DEFAULT_THEME)
+    return dict(row)
 
 
-def update_theme(theme: dict):
+def get_business(business_id: int):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM businesses WHERE id = ?", (business_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_business_by_bot_token(bot_token: str):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM businesses WHERE bot_token = ?", (bot_token,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+THEME_FIELDS = (
+    "bg_color", "surface_color", "text_color", "hint_color",
+    "primary_color", "primary_text_color", "danger_color", "success_color", "radius",
+)
+
+
+def get_theme(business_id: int):
+    business = get_business(business_id)
+    return {k: business[k] for k in THEME_FIELDS} if business else dict(DEFAULT_THEME)
+
+
+def update_theme(business_id: int, theme: dict):
     conn = get_connection()
     conn.execute(
         """
-        UPDATE theme_settings
+        UPDATE businesses
         SET bg_color = ?, surface_color = ?, text_color = ?, hint_color = ?,
             primary_color = ?, primary_text_color = ?, danger_color = ?,
             success_color = ?, radius = ?
-        WHERE id = 1
+        WHERE id = ?
         """,
         (
             theme["bg_color"], theme["surface_color"], theme["text_color"], theme["hint_color"],
             theme["primary_color"], theme["primary_text_color"], theme["danger_color"],
-            theme["success_color"], theme["radius"],
+            theme["success_color"], theme["radius"], business_id,
         ),
     )
     conn.commit()
@@ -132,31 +174,35 @@ def update_theme(theme: dict):
 
 # ---------- Позиции (услуги/товары) ----------
 
-def get_services(active_only: bool = True):
+def get_services(business_id: int, active_only: bool = True):
     conn = get_connection()
-    query = "SELECT * FROM services"
+    query = "SELECT * FROM services WHERE business_id = ?"
     if active_only:
-        query += " WHERE is_active = 1"
+        query += " AND is_active = 1"
     query += " ORDER BY sort_order, id"
-    rows = conn.execute(query).fetchall()
+    rows = conn.execute(query, (business_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def get_service(service_id: int):
+def get_service(business_id: int, service_id: int):
     conn = get_connection()
-    row = conn.execute("SELECT * FROM services WHERE id = ?", (service_id,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM services WHERE id = ? AND business_id = ?", (service_id, business_id)
+    ).fetchone()
     conn.close()
     return dict(row) if row else None
 
 
-def create_service(name: str, price: int, duration_min: int, type_: str):
+def create_service(business_id: int, name: str, price: int, duration_min: int, type_: str):
     conn = get_connection()
-    cur = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM services")
+    cur = conn.execute(
+        "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM services WHERE business_id = ?", (business_id,)
+    )
     next_order = cur.fetchone()[0]
     cur = conn.execute(
-        "INSERT INTO services (name, price, duration_min, type, sort_order) VALUES (?, ?, ?, ?, ?)",
-        (name, price, duration_min if type_ == "slot" else 0, type_, next_order),
+        "INSERT INTO services (business_id, name, price, duration_min, type, sort_order) VALUES (?, ?, ?, ?, ?, ?)",
+        (business_id, name, price, duration_min if type_ == "slot" else 0, type_, next_order),
     )
     conn.commit()
     new_id = cur.lastrowid
@@ -164,23 +210,23 @@ def create_service(name: str, price: int, duration_min: int, type_: str):
     return new_id
 
 
-def update_service(service_id: int, name: str, price: int, duration_min: int, type_: str, is_active: bool):
+def update_service(business_id: int, service_id: int, name: str, price: int, duration_min: int, type_: str, is_active: bool):
     conn = get_connection()
     conn.execute(
         """
         UPDATE services
         SET name = ?, price = ?, duration_min = ?, type = ?, is_active = ?
-        WHERE id = ?
+        WHERE id = ? AND business_id = ?
         """,
-        (name, price, duration_min if type_ == "slot" else 0, type_, 1 if is_active else 0, service_id),
+        (name, price, duration_min if type_ == "slot" else 0, type_, 1 if is_active else 0, service_id, business_id),
     )
     conn.commit()
     conn.close()
 
 
-def delete_service(service_id: int):
+def delete_service(business_id: int, service_id: int):
     conn = get_connection()
-    conn.execute("DELETE FROM services WHERE id = ?", (service_id,))
+    conn.execute("DELETE FROM services WHERE id = ? AND business_id = ?", (service_id, business_id))
     conn.commit()
     conn.close()
 
@@ -202,10 +248,10 @@ def _slot_overlaps_busy(slot_start_minutes, slot_duration, busy_ranges):
     return False
 
 
-def get_available_slots(service_id: int, date: str):
+def get_available_slots(business_id: int, service_id: int, date: str):
     """Возвращает список свободных времён (HH:MM) для позиции на дату,
     с учётом её длительности и уже существующих записей в этот день."""
-    service = get_service(service_id)
+    service = get_service(business_id, service_id)
     if not service or service["type"] != "slot":
         return []
     duration = service["duration_min"]
@@ -216,9 +262,9 @@ def get_available_slots(service_id: int, date: str):
         SELECT b.time, s.duration_min
         FROM bookings b
         JOIN services s ON s.id = b.service_id
-        WHERE b.date = ? AND b.status != 'cancelled' AND s.type = 'slot'
+        WHERE b.business_id = ? AND b.date = ? AND b.status != 'cancelled' AND s.type = 'slot'
         """,
-        (date,),
+        (business_id, date),
     ).fetchall()
     conn.close()
 
@@ -247,14 +293,14 @@ def get_available_slots(service_id: int, date: str):
 
 # ---------- Заявки (bookings) ----------
 
-def create_booking(service_id, date, time, client_name, client_tg_id, quantity=1, comment=None):
+def create_booking(business_id, service_id, date, time, client_name, client_tg_id, quantity=1, comment=None):
     conn = get_connection()
     cur = conn.execute(
         """
-        INSERT INTO bookings (service_id, client_name, client_tg_id, date, time, quantity, comment)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO bookings (business_id, service_id, client_name, client_tg_id, date, time, quantity, comment)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (service_id, client_name, client_tg_id, date, time, quantity, comment),
+        (business_id, service_id, client_name, client_tg_id, date, time, quantity, comment),
     )
     conn.commit()
     booking_id = cur.lastrowid
@@ -262,26 +308,29 @@ def create_booking(service_id, date, time, client_name, client_tg_id, quantity=1
     return booking_id
 
 
-def get_all_bookings(status: str = None):
+def get_all_bookings(business_id: int, status: str = None):
     conn = get_connection()
     query = """
         SELECT b.id, b.date, b.time, b.client_name, b.client_tg_id, b.quantity,
                b.comment, b.status, b.created_at,
                s.name as service_name, s.price, s.type as service_type
         FROM bookings b JOIN services s ON s.id = b.service_id
+        WHERE b.business_id = ?
     """
-    params = ()
+    params = [business_id]
     if status:
-        query += " WHERE b.status = ?"
-        params = (status,)
+        query += " AND b.status = ?"
+        params.append(status)
     query += " ORDER BY b.created_at DESC"
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def update_booking_status(booking_id: int, status: str):
+def update_booking_status(business_id: int, booking_id: int, status: str):
     conn = get_connection()
-    conn.execute("UPDATE bookings SET status = ? WHERE id = ?", (status, booking_id))
+    conn.execute(
+        "UPDATE bookings SET status = ? WHERE id = ? AND business_id = ?", (status, booking_id, business_id)
+    )
     conn.commit()
     conn.close()
