@@ -1,0 +1,8 @@
+.env
+venv/
+__pycache__/
+*.pyc
+booking.db
+ngrok.log
+node_modules/
+.claude/scheduled_tasks.lock

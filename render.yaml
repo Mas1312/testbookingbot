@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: tg-booking-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT --app-dir backend
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: WEBAPP_URL
+        sync: false
+      - key: BUSINESS_NAME
+        value: Моя запись
+      - key: OWNER_TG_ID
+        sync: false
+      - key: USE_WEBHOOK
+        value: "true"
+      - key: WEBHOOK_SECRET
+        generateValue: true

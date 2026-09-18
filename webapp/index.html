@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Запись онлайн</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="style.css?v=2" />
+</head>
+<body>
+  <header id="brand-bar">
+    <span id="brand-mark">З</span>
+    <span id="brand-name">Загрузка…</span>
+  </header>
+
+  <div id="app">
+
+    <!-- Переключатель "Клиент / Админка" — виден только владельцу -->
+    <div id="mode-switch" class="mode-switch hidden">
+      <button id="tab-client" class="mode-tab active">Запись</button>
+      <button id="tab-admin" class="mode-tab">Управление</button>
+    </div>
+
+    <!-- ===================== КЛИЕНТСКИЙ РЕЖИМ ===================== -->
+    <div id="client-mode">
+
+      <section id="screen-services" class="screen">
+        <h1 id="business-title">Выберите услугу</h1>
+        <p class="screen-subtitle">Быстро, без звонков — в пару касаний</p>
+        <div id="services-list" class="list"></div>
+      </section>
+
+      <section id="screen-dates" class="screen hidden">
+        <button class="back-btn" data-back="services">← Назад</button>
+        <h1>Выберите дату</h1>
+        <div id="dates-list" class="list horizontal"></div>
+      </section>
+
+      <section id="screen-slots" class="screen hidden">
+        <button class="back-btn" data-back="dates">← Назад</button>
+        <h1>Выберите время</h1>
+        <div id="slots-list" class="list grid"></div>
+        <p id="no-slots-msg" class="hint hidden">На этот день свободных окон нет, выберите другую дату.</p>
+      </section>
+
+      <section id="screen-details" class="screen hidden">
+        <button class="back-btn" data-back-dynamic></button>
+        <h1>Детали заказа</h1>
+        <div id="order-summary" class="summary-card"></div>
+
+        <div id="quantity-block" class="field-block hidden">
+          <label>Количество</label>
+          <div class="qty-control">
+            <button id="qty-minus" class="qty-btn">−</button>
+            <span id="qty-value">1</span>
+            <button id="qty-plus" class="qty-btn">+</button>
+          </div>
+        </div>
+
+        <div class="field-block">
+          <label>Комментарий к заявке (необязательно)</label>
+          <textarea id="comment-input" placeholder="Например: без лука / нужен именно Андрей / аллергия на краску..."></textarea>
+        </div>
+      </section>
+
+      <section id="screen-done" class="screen hidden">
+        <div class="success-icon">✅</div>
+        <h1>Готово!</h1>
+        <div id="done-summary" class="summary-card"></div>
+        <p class="hint">Владелец получит вашу заявку.</p>
+      </section>
+
+    </div>
+
+    <!-- ===================== АДМИН-РЕЖИМ ===================== -->
+    <div id="admin-mode" class="hidden">
+
+      <div class="admin-tabs">
+        <button id="admin-tab-orders" class="admin-tab active">Заявки</button>
+        <button id="admin-tab-services" class="admin-tab">Позиции</button>
+        <button id="admin-tab-theme" class="admin-tab">Оформление</button>
+      </div>
+
+      <!-- Список заявок -->
+      <section id="admin-screen-orders" class="screen">
+        <div class="filter-row">
+          <button class="filter-pill active" data-status="">Все</button>
+          <button class="filter-pill" data-status="new">Новые</button>
+          <button class="filter-pill" data-status="done">Выполнены</button>
+          <button class="filter-pill" data-status="cancelled">Отменены</button>
+        </div>
+        <div id="orders-list" class="list"></div>
+        <p id="no-orders-msg" class="hint hidden">Заявок пока нет.</p>
+      </section>
+
+      <!-- Список позиций + форма добавления -->
+      <section id="admin-screen-services" class="screen hidden">
+        <button id="add-service-btn" class="add-btn">+ Добавить позицию</button>
+        <div id="admin-services-list" class="list"></div>
+      </section>
+
+      <!-- Форма создания/редактирования позиции -->
+      <section id="admin-screen-service-form" class="screen hidden">
+        <button class="back-btn" data-back="admin-services">← Назад</button>
+        <h1 id="service-form-title">Новая позиция</h1>
+
+        <div class="field-block">
+          <label>Название</label>
+          <input id="service-name" type="text" placeholder="Например: Стрижка мужская" />
+        </div>
+
+        <div class="field-block">
+          <label>Тип позиции</label>
+          <div class="type-toggle">
+            <button id="type-slot" class="type-btn active" data-type="slot">По расписанию</button>
+            <button id="type-order" class="type-btn" data-type="order">Разовый заказ</button>
+          </div>
+          <p class="hint">«По расписанию» — клиент выбирает дату и время (стрижка, аренда, консультация).
+          «Разовый заказ» — без выбора времени (еда, товар, любая мгновенная услуга).</p>
+        </div>
+
+        <div class="field-block">
+          <label>Цена, ₽</label>
+          <input id="service-price" type="number" inputmode="numeric" placeholder="1200" />
+        </div>
+
+        <div id="duration-block" class="field-block">
+          <label>Длительность, мин</label>
+          <input id="service-duration" type="number" inputmode="numeric" placeholder="30" />
+        </div>
+
+        <button id="save-service-btn" class="primary-btn">Сохранить</button>
+        <button id="delete-service-btn" class="danger-btn hidden">Удалить позицию</button>
+      </section>
+
+      <!-- Оформление Mini App -->
+      <section id="admin-screen-theme" class="screen hidden">
+        <h1>Оформление</h1>
+        <p class="hint theme-intro">Настрой фирменные цвета — клиенты увидят их сразу после сохранения.</p>
+
+        <div class="preset-row" id="theme-presets"></div>
+
+        <div class="theme-preview" id="theme-preview">
+          <div class="theme-preview-card">
+            <div class="theme-preview-title">Стрижка мужская</div>
+            <div class="theme-preview-meta">30 мин · 1200 ₽</div>
+          </div>
+          <button class="theme-preview-btn" id="theme-preview-btn" type="button">Подтвердить заявку</button>
+        </div>
+
+        <div class="theme-field-grid">
+          <label class="color-field">
+            <span>Фон страницы</span>
+            <span class="color-input-wrap"><input type="color" id="theme-bg_color" /></span>
+          </label>
+          <label class="color-field">
+            <span>Фон карточек</span>
+            <span class="color-input-wrap"><input type="color" id="theme-surface_color" /></span>
+          </label>
+          <label class="color-field">
+            <span>Основной текст</span>
+            <span class="color-input-wrap"><input type="color" id="theme-text_color" /></span>
+          </label>
+          <label class="color-field">
+            <span>Второстепенный текст</span>
+            <span class="color-input-wrap"><input type="color" id="theme-hint_color" /></span>
+          </label>
+          <label class="color-field">
+            <span>Кнопки (фон)</span>
+            <span class="color-input-wrap"><input type="color" id="theme-primary_color" /></span>
+          </label>
+          <label class="color-field">
+            <span>Кнопки (текст)</span>
+            <span class="color-input-wrap"><input type="color" id="theme-primary_text_color" /></span>
+          </label>
+          <label class="color-field">
+            <span>Опасное действие</span>
+            <span class="color-input-wrap"><input type="color" id="theme-danger_color" /></span>
+          </label>
+          <label class="color-field">
+            <span>Успех / выполнено</span>
+            <span class="color-input-wrap"><input type="color" id="theme-success_color" /></span>
+          </label>
+        </div>
+
+        <div class="field-block">
+          <label>Скругление углов: <span id="radius-value">16</span>px</label>
+          <input type="range" id="theme-radius" min="0" max="28" step="1" class="radius-slider" />
+        </div>
+
+        <button id="save-theme-btn" class="primary-btn">Сохранить оформление</button>
+        <button id="reset-theme-btn" class="add-btn">Сбросить к цветам по умолчанию</button>
+      </section>
+
+    </div>
+
+  </div>
+
+  <script src="app.js?v=2"></script>
+</body>
+</html>

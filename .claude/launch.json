@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "booking-server",
+      "runtimeExecutable": "C:\\Users\\Пользователь\\Desktop\\tg-booking-bot\\venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "server:app", "--reload", "--port", "8000", "--app-dir", "C:\\Users\\Пользователь\\Desktop\\tg-booking-bot\\backend"],
+      "port": 8000
+    }
+  ]
+}
