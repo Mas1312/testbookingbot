@@ -1,4 +1,5 @@
 import os
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -31,7 +32,9 @@ USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"
 
 # Секрет для проверки, что запросы на /webhook действительно от Telegram, а не от кого
 # попало. Необязателен для локальной разработки, но желателен в проде (задать в .env).
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+# Telegram разрешает в secret_token только A-Z a-z 0-9 _ - , поэтому чистим значение —
+# автогенерируемые хостингом (например Render) секреты часто содержат другие символы.
+WEBHOOK_SECRET = re.sub(r"[^A-Za-z0-9_-]", "", os.getenv("WEBHOOK_SECRET", ""))
 
 # --- Настройки рабочего времени бизнеса (пока захардкожены для прототипа) ---
 WORK_START_HOUR = 9      # во сколько открываемся
