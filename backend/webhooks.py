@@ -14,6 +14,9 @@ from config import USE_WEBHOOK, WEBAPP_URL
 # входящий вебхук-запрос (чтобы не открывать новую aiohttp-сессию на запрос).
 bots_by_business: dict[int, Bot] = {}
 
+# Типы обновлений, которые нужны хендлерам в bot.py (новый тип хендлера — добавить сюда).
+ALLOWED_UPDATES = ["message", "callback_query"]
+
 
 def webhook_secret_for(bot_token: str) -> str:
     """Детерминированный секрет для проверки X-Telegram-Bot-Api-Secret-Token,
@@ -33,6 +36,10 @@ async def register_webhook(business: dict):
             await bot_instance.set_webhook(
                 url=f"{WEBAPP_URL}/webhook/{business['id']}",
                 secret_token=webhook_secret_for(business["bot_token"]),
+                # Задаём явно: иначе Telegram оставляет прежнее значение, а оно могло
+                # остаться от старого polling-а (aiogram выставляет allowed_updates по
+                # имеющимся хендлерам — тогда было только "message" и кнопки не доходили).
+                allowed_updates=ALLOWED_UPDATES,
                 drop_pending_updates=True,
             )
     except Exception:
