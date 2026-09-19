@@ -8,7 +8,7 @@ const isRealTelegram = !!(window.Telegram && window.Telegram.WebApp && window.Te
 const tg = isRealTelegram ? window.Telegram.WebApp : {
   ready: () => {},
   expand: () => {},
-  close: () => alert("В демо-режиме (вне Telegram) закрытие недоступно"),
+  close: () => toast("В демо-режиме (вне Telegram) закрытие недоступно"),
   MainButton: {
     text: "",
     show() { this._el && (this._el.style.display = "block"); this._render(); },
@@ -206,7 +206,7 @@ function bindPhotoPicker(prefix, opts, onPick, onClear) {
       await onPick(image);
       showPicked(prefix, image);
     } catch (err) {
-      alert(err.message);
+      toast(err.message);
     } finally {
       btn.textContent = label;
       btn.disabled = false;
@@ -217,9 +217,45 @@ function bindPhotoPicker(prefix, opts, onPick, onClear) {
       await onClear();
       showPicked(prefix, null);
     } catch (err) {
-      alert(err.message);
+      toast(err.message);
     }
   });
+}
+
+// Иконки из спрайта в index.html (<symbol id="i-имя">).
+const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="#i-${String(name).replace(/[^a-z-]/g, "")}"/></svg>`;
+
+// Короткое уведомление вместо системного toast(): не блокирует страницу и выглядит как часть приложения.
+let toastTimer = null;
+function toast(message) {
+  const box = el("toast");
+  box.textContent = message;
+  box.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => box.classList.add("hidden"), Math.max(2800, String(message).length * 55));
+}
+
+// Подтверждение вместо системного confirm(): возвращает Promise<boolean>.
+function askConfirm(text, yesLabel = "Да") {
+  return new Promise((resolve) => {
+    el("confirm-text").textContent = text;
+    el("confirm-yes").textContent = yesLabel;
+    el("confirm-modal").classList.remove("hidden");
+    const finish = (answer) => {
+      el("confirm-modal").classList.add("hidden");
+      el("confirm-yes").onclick = null;
+      el("confirm-no").onclick = null;
+      resolve(answer);
+    };
+    el("confirm-yes").onclick = () => finish(true);
+    el("confirm-no").onclick = () => finish(false);
+  });
+}
+
+// «Сохранено» на кнопке на полторы секунды.
+function flashSaved(btn, label) {
+  btn.innerHTML = `${icon("check")} Сохранено`;
+  setTimeout(() => { btn.textContent = label; }, 1500);
 }
 
 function formatDateLabel(isoDate) {
@@ -329,7 +365,7 @@ async function loadServices() {
   el("business-title").textContent = state.config.business_name || "Выберите услугу";
   const emptyMsg = el("no-services-msg");
   emptyMsg.textContent = state.isOwner
-    ? "Пока нет ни одной услуги. Добавьте их во вкладке «Управление» → «Позиции»."
+    ? "Пока нет ни одной услуги. Добавьте их во вкладке «Управление», раздел «Позиции»."
     : "Запись скоро откроется — владелец ещё настраивает услуги. Загляните позже!";
   emptyMsg.classList.toggle("hidden", state.services.length > 0);
   const list = el("services-list");
@@ -416,11 +452,11 @@ async function loadMyBookings() {
 }
 
 async function cancelMyBooking(booking) {
-  if (!confirm("Отменить эту запись?")) return;
+  if (!(await askConfirm("Отменить эту запись?", "Отменить запись"))) return;
   try {
     await api(`/api/my-bookings/${booking.id}/cancel`, { method: "POST", body: JSON.stringify(clientAuth()) });
   } catch (e) {
-    alert(e.message);
+    toast(e.message);
   }
   loadMyBookings();
 }
@@ -462,7 +498,7 @@ async function loadMasters() {
       business_id: state.businessId,
     })}`);
   } catch (e) {
-    alert(e.message);
+    toast(e.message);
     return;
   }
   if (state.masters.length === 0) {
@@ -474,7 +510,7 @@ async function loadMasters() {
     card.className = "card";
     card.innerHTML = `
       <div class="title">${escapeHtml(master.name)}</div>
-      <span class="chev">›</span>
+      <span class="chev">${icon("chevron-right")}</span>
     `;
     card.addEventListener("click", () => selectMaster(master));
     list.appendChild(card);
@@ -575,7 +611,7 @@ function showDetailsScreen() {
   renderOrderSummary();
 
   const backBtn = document.querySelector("#screen-details [data-back-dynamic]");
-  backBtn.textContent = isOrder ? "← Назад" : "← Назад";
+  backBtn.innerHTML = `${icon("arrow-left")}Назад`;
   backBtn.onclick = () => {
     if (isOrder) {
       showScreen("services");
@@ -640,11 +676,11 @@ async function submitBooking() {
     phone = el("phone-input").value.trim();
     consent = el("consent-check").checked;
     if (!phone && phoneMode === "required") {
-      alert("Укажите номер телефона");
+      toast("Укажите номер телефона");
       return;
     }
     if (phone && !consent) {
-      alert("Отметьте согласие на обработку персональных данных");
+      toast("Отметьте согласие на обработку персональных данных");
       return;
     }
   }
@@ -686,7 +722,7 @@ async function submitBooking() {
     tg.MainButton.hide();
     showScreen("done");
   } catch (e) {
-    alert(e.message);
+    toast(e.message);
     if (state.selectedService.type === "slot") {
       loadSlots();
       showScreen("slots");
@@ -802,12 +838,12 @@ async function loadAdminOrders() {
           <div class="order-title">${escapeHtml(order.service_name)}${qtyText}</div>
           <div class="order-meta">${escapeHtml(order.client_name) || "Без имени"} · ${whenText}</div>
           ${order.master_name ? `<div class="order-meta">Мастер: ${escapeHtml(order.master_name)}</div>` : ""}
-          ${order.client_phone ? `<div class="order-meta">📞 ${escapeHtml(order.client_phone)}</div>` : ""}
+          ${order.client_phone ? `<div class="order-meta">${icon("phone")}${escapeHtml(order.client_phone)}</div>` : ""}
           <div class="order-meta">${order.price * order.quantity} ₽</div>
         </div>
         <span class="status-badge status-${order.status}">${statusLabels[order.status] || order.status}</span>
       </div>
-      ${order.comment ? `<div class="order-comment">💬 ${escapeHtml(order.comment)}</div>` : ""}
+      ${order.comment ? `<div class="order-comment">${icon("message")}${escapeHtml(order.comment)}</div>` : ""}
       <div class="order-actions">
         ${order.status === "new" ? `<button class="btn-confirm" data-id="${order.id}" data-action="confirmed">Подтвердить</button>` : ""}
         <button class="btn-done" data-id="${order.id}" data-action="done">Выполнено</button>
@@ -862,7 +898,7 @@ async function loadAdminServices() {
           <div class="badge-type">${meta}${service.is_active ? "" : " · скрыта"}</div>
         </div>
       </div>
-      <span>✎</span>
+      <span class="edit-mark">${icon("pencil")}</span>
     `;
     card.addEventListener("click", () => openServiceForm(service));
     list.appendChild(card);
@@ -910,11 +946,11 @@ el("save-service-btn").addEventListener("click", async () => {
   const duration = type === "slot" ? parseInt(el("service-duration").value || "0", 10) : 0;
 
   if (!name || isNaN(price) || price < 0) {
-    alert("Заполни название и укажи цену не меньше нуля");
+    toast("Заполни название и укажи цену не меньше нуля");
     return;
   }
   if (type === "slot" && (isNaN(duration) || duration <= 0)) {
-    alert("Укажи длительность в минутах для позиции по расписанию");
+    toast("Укажи длительность в минутах для позиции по расписанию");
     return;
   }
 
@@ -944,13 +980,13 @@ el("save-service-btn").addEventListener("click", async () => {
     showAdminScreen("services");
     loadAdminServices();
   } catch (e) {
-    alert(e.message);
+    toast(e.message);
   }
 });
 
 el("delete-service-btn").addEventListener("click", async () => {
   if (!state.admin.editingServiceId) return;
-  if (!confirm("Удалить эту позицию? Это действие необратимо.")) return;
+  if (!(await askConfirm("Удалить эту позицию? Это действие необратимо.", "Удалить"))) return;
   await api(`/api/admin/services/${state.admin.editingServiceId}?${qs({
     init_data: state.initData,
     owner_tg_id: state.myTgId,
@@ -987,7 +1023,7 @@ async function loadAdminMasters() {
         <div class="title">${escapeHtml(master.name)}</div>
         <div class="badge-type">${scope}${master.is_active ? "" : " · скрыт"}</div>
       </div>
-      <span>✎</span>
+      <span class="edit-mark">${icon("pencil")}</span>
     `;
     card.addEventListener("click", () => openMasterForm(master));
     list.appendChild(card);
@@ -1004,7 +1040,7 @@ el("use-masters-toggle").addEventListener("change", async (e) => {
     state.config.use_masters = enabled;
   } catch (err) {
     e.target.checked = !enabled;
-    alert(err.message);
+    toast(err.message);
   }
 });
 
@@ -1036,13 +1072,13 @@ async function openMasterForm(master) {
 el("save-master-btn").addEventListener("click", async () => {
   const name = el("master-name").value.trim();
   if (!name) {
-    alert("Укажите имя мастера");
+    toast("Укажите имя мастера");
     return;
   }
   const boxes = [...el("master-services-box").querySelectorAll("input[type=checkbox]")];
   const serviceIds = boxes.filter((b) => b.checked).map((b) => Number(b.value));
   if (boxes.length > 0 && serviceIds.length === 0) {
-    alert("Отметьте хотя бы одну услугу");
+    toast("Отметьте хотя бы одну услугу");
     return;
   }
 
@@ -1056,19 +1092,19 @@ el("save-master-btn").addEventListener("click", async () => {
     showAdminScreen("masters");
     loadAdminMasters();
   } catch (e) {
-    alert(e.message);
+    toast(e.message);
   }
 });
 
 el("delete-master-btn").addEventListener("click", async () => {
   if (!state.admin.editingMasterId) return;
-  if (!confirm("Удалить мастера? Уже созданные записи к нему останутся в истории.")) return;
+  if (!(await askConfirm("Удалить мастера? Уже созданные записи к нему останутся в истории.", "Удалить"))) return;
   try {
     await api(`/api/admin/masters/${state.admin.editingMasterId}?${qs(adminAuth())}`, { method: "DELETE" });
     showAdminScreen("masters");
     loadAdminMasters();
   } catch (e) {
-    alert(e.message);
+    toast(e.message);
   }
 });
 
@@ -1282,16 +1318,15 @@ el("save-theme-btn").addEventListener("click", async () => {
   try {
     const payload = readThemeForm();
     if (payload.bg_mode === "image" && !payload.bg_image_id) {
-      alert("Загрузите картинку для фона или выберите другой тип фона");
+      toast("Загрузите картинку для фона или выберите другой тип фона");
       return;
     }
     const result = await api("/api/admin/theme", { method: "PUT", body: JSON.stringify(payload) });
     state.config.theme = result.theme;
     applyTheme(result.theme);
-    el("save-theme-btn").textContent = "Сохранено ✓";
-    setTimeout(() => { el("save-theme-btn").textContent = "Сохранить оформление"; }, 1500);
+    flashSaved(el("save-theme-btn"), "Сохранить оформление");
   } catch (e) {
-    alert(e.message);
+    toast(e.message);
   }
 });
 
@@ -1316,18 +1351,18 @@ async function loadSavedThemes() {
     row.className = "saved-theme-row";
     row.innerHTML = `<span class="dot" style="background:${primaryFillCss(saved.theme)}"></span>
       <span class="name">${escapeHtml(saved.name)}</span>
-      <button type="button" class="link-btn" title="Удалить">✕</button>`;
+      <button type="button" class="link-btn" title="Удалить" aria-label="Удалить">${icon("x")}</button>`;
     row.addEventListener("click", () => {
       fillThemeForm(saved.theme);
       previewTheme();
     });
     row.querySelector(".link-btn").addEventListener("click", async (e) => {
       e.stopPropagation();
-      if (!confirm(`Удалить вариант «${saved.name}»?`)) return;
+      if (!(await askConfirm(`Удалить вариант «${saved.name}»?`, "Удалить"))) return;
       try {
         await api(`/api/admin/themes/saved/${saved.id}?${qs(adminAuth())}`, { method: "DELETE" });
       } catch (err) {
-        alert(err.message);
+        toast(err.message);
       }
       loadSavedThemes();
     });
@@ -1338,12 +1373,12 @@ async function loadSavedThemes() {
 el("save-variant-btn").addEventListener("click", async () => {
   const name = el("saved-theme-name").value.trim();
   if (!name) {
-    alert("Введите название варианта");
+    toast("Введите название варианта");
     return;
   }
   const payload = { ...readThemeForm(), name };
   if (payload.bg_mode === "image" && !payload.bg_image_id) {
-    alert("Загрузите картинку для фона или выберите другой тип фона");
+    toast("Загрузите картинку для фона или выберите другой тип фона");
     return;
   }
   try {
@@ -1351,7 +1386,7 @@ el("save-variant-btn").addEventListener("click", async () => {
     el("saved-theme-name").value = "";
     loadSavedThemes();
   } catch (e) {
-    alert(e.message);
+    toast(e.message);
   }
 });
 
@@ -1405,11 +1440,12 @@ function renderWizardNiches() {
     card.className = "card";
     card.dataset.niche = niche.id;
     card.innerHTML = `
+      <span class="tile">${icon(niche.icon)}</span>
       <div class="card-body">
-        <div class="title">${niche.emoji} ${escapeHtml(niche.title)}</div>
+        <div class="title">${escapeHtml(niche.title)}</div>
         <div class="meta">${niche.services.length} ${pluralRu(niche.services.length, ["услуга", "услуги", "услуг"])} в примере</div>
       </div>
-      <span class="chev">›</span>
+      <span class="chev">${icon("chevron-right")}</span>
     `;
     card.addEventListener("click", () => selectWizardNiche(niche.id));
     list.appendChild(card);
@@ -1438,7 +1474,7 @@ el("wizard-apply-btn").addEventListener("click", async () => {
     });
     showWizardStep(2);
   } catch (e) {
-    alert(e.message);
+    toast(e.message);
   } finally {
     btn.disabled = false;
   }
@@ -1472,18 +1508,18 @@ el("wizard-save-schedule-btn").addEventListener("click", async () => {
     days_ahead: parseInt(el("wizard-days").value, 10),
   };
   if (Object.values(payload).some((v) => typeof v === "number" && isNaN(v))) {
-    alert("Заполните часы работы и количество дней");
+    toast("Заполните часы работы и количество дней");
     return;
   }
   if (payload.work_end_hour <= payload.work_start_hour) {
-    alert("Время закрытия должно быть позже времени открытия");
+    toast("Время закрытия должно быть позже времени открытия");
     return;
   }
   try {
     await api("/api/admin/schedule", { method: "PUT", body: JSON.stringify(payload) });
     showWizardStep(3);
   } catch (e) {
-    alert(e.message);
+    toast(e.message);
   }
 });
 
@@ -1516,10 +1552,9 @@ el("save-settings-btn").addEventListener("click", async () => {
     await api("/api/admin/settings", { method: "PUT", body: JSON.stringify(payload) });
     state.config.collect_phone = payload.collect_phone;
     state.config.privacy_url = payload.privacy_url;
-    el("save-settings-btn").textContent = "Сохранено ✓";
-    setTimeout(() => { el("save-settings-btn").textContent = "Сохранить настройки"; }, 1500);
+    flashSaved(el("save-settings-btn"), "Сохранить настройки");
   } catch (e) {
-    alert(e.message);
+    toast(e.message);
   }
 });
 
@@ -1553,16 +1588,15 @@ el("save-schedule-btn").addEventListener("click", async () => {
   };
 
   if (payload.work_end_hour <= payload.work_start_hour) {
-    alert("Время закрытия должно быть позже времени открытия");
+    toast("Время закрытия должно быть позже времени открытия");
     return;
   }
 
   try {
     await api("/api/admin/schedule", { method: "PUT", body: JSON.stringify(payload) });
-    el("save-schedule-btn").textContent = "Сохранено ✓";
-    setTimeout(() => { el("save-schedule-btn").textContent = "Сохранить расписание"; }, 1500);
+    flashSaved(el("save-schedule-btn"), "Сохранить расписание");
   } catch (e) {
-    alert(e.message);
+    toast(e.message);
   }
 });
 

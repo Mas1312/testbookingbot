@@ -69,17 +69,18 @@ def owner_text(booking: dict) -> str:
     client = _e(booking["client_name"] or "Без имени")
     if booking["client_tg_id"]:
         client = f'<a href="tg://user?id={int(booking["client_tg_id"])}">{client}</a>'
+    # В чате Telegram эмодзи уместны (в Mini App вместо них SVG-иконки).
     lines = [
         f"<b>Заявка №{booking['id']}</b> — {STATUS_LINES.get(booking['status'], booking['status'])}",
-        f"{_title(booking)}",
+        _title(booking),
         f"📅 {_when(booking)}",
-        f"👤 {client}",
-        f"💰 {booking['price'] * booking['quantity']} ₽",
     ]
-    if booking["client_phone"]:
-        lines.insert(4, f"📞 {_e(booking['client_phone'])}")
     if booking["master_name"]:
-        lines.insert(3, f"🧑‍🎨 Мастер: {_e(booking['master_name'])}")
+        lines.append(f"🧑‍🎨 Мастер: {_e(booking['master_name'])}")
+    lines.append(f"👤 {client}")
+    if booking["client_phone"]:
+        lines.append(f"📞 {_e(booking['client_phone'])}")
+    lines.append(f"💰 {booking['price'] * booking['quantity']} ₽")
     if booking["comment"]:
         lines.append(f"💬 {_e(booking['comment'])}")
     return "\n".join(lines)

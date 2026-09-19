@@ -4,7 +4,7 @@
 NICHE_TEMPLATES = [
     {
         "id": "beauty",
-        "emoji": "💅",
+        "icon": "scissors",
         "title": "Красота: мастер или салон",
         "schedule": {"work_start_hour": 10, "work_end_hour": 20, "slot_step_minutes": 30, "days_ahead": 14},
         "services": [
@@ -22,7 +22,7 @@ NICHE_TEMPLATES = [
     },
     {
         "id": "rental",
-        "emoji": "🛶",
+        "icon": "clock",
         "title": "Аренда по часам",
         "schedule": {"work_start_hour": 9, "work_end_hour": 21, "slot_step_minutes": 60, "days_ahead": 14},
         "services": [
@@ -36,7 +36,7 @@ NICHE_TEMPLATES = [
     },
     {
         "id": "consult",
-        "emoji": "🎓",
+        "icon": "chat",
         "title": "Консультации и занятия",
         "schedule": {"work_start_hour": 10, "work_end_hour": 20, "slot_step_minutes": 30, "days_ahead": 14},
         "services": [
