@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Запись онлайн</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="style.css?v=6" />
+  <link rel="stylesheet" href="style.css?v=7" />
 </head>
 <body>
   <div id="page-bg"></div>
@@ -31,6 +31,7 @@
         <p class="screen-subtitle">Быстро, без звонков — в пару касаний</p>
         <button id="my-bookings-btn" class="add-btn my-bookings-link">📋 Мои записи</button>
         <div id="services-list" class="list"></div>
+        <p id="no-services-msg" class="hint empty-state hidden"></p>
       </section>
 
       <section id="screen-my" class="screen hidden">
@@ -119,6 +120,73 @@
         <button id="admin-tab-schedule" class="admin-tab">Расписание</button>
         <button id="admin-tab-settings" class="admin-tab">Настройки</button>
       </div>
+
+      <!-- Мастер первого запуска: показывается, пока у бизнеса нет ни одной позиции -->
+      <section id="admin-screen-wizard" class="screen hidden">
+        <div id="wizard-step-label" class="section-label">Шаг 1 из 3</div>
+
+        <div id="wizard-step-1">
+          <h1>Давайте настроим запись</h1>
+          <p class="hint theme-intro">Выберите, чем вы занимаетесь: добавим примерные услуги, а вы потом измените их под себя.</p>
+          <div id="wizard-niches" class="list"></div>
+
+          <div id="wizard-preview" class="wizard-preview hidden">
+            <div class="section-label">Что будет добавлено</div>
+            <div id="wizard-preview-list" class="summary-card"></div>
+            <p class="hint">Цены и описания примерные — их можно изменить в разделе «Позиции».</p>
+            <button id="wizard-apply-btn" class="primary-btn">Добавить эти услуги</button>
+          </div>
+
+          <button id="wizard-empty-btn" class="add-btn">Ничего из этого — добавлю услуги сам</button>
+        </div>
+
+        <div id="wizard-step-2" class="hidden">
+          <h1>Когда вы работаете?</h1>
+          <p class="hint theme-intro">Клиенты смогут записываться только на это время. Позже можно изменить во вкладке «Расписание».</p>
+
+          <div class="field-block">
+            <label>Часовой пояс</label>
+            <select id="wizard-timezone"></select>
+          </div>
+
+          <div class="theme-field-grid">
+            <div class="field-block">
+              <label>Открываемся, час</label>
+              <input id="wizard-start" type="number" inputmode="numeric" min="0" max="23" placeholder="9" />
+            </div>
+            <div class="field-block">
+              <label>Закрываемся, час</label>
+              <input id="wizard-end" type="number" inputmode="numeric" min="1" max="24" placeholder="18" />
+            </div>
+          </div>
+
+          <div class="field-block">
+            <label>Шаг сетки времени</label>
+            <select id="wizard-step">
+              <option value="15">15 минут</option>
+              <option value="20">20 минут</option>
+              <option value="30">30 минут</option>
+              <option value="45">45 минут</option>
+              <option value="60">60 минут</option>
+            </select>
+          </div>
+
+          <div class="field-block">
+            <label>На сколько дней вперёд открыта запись</label>
+            <input id="wizard-days" type="number" inputmode="numeric" min="1" max="60" placeholder="14" />
+          </div>
+
+          <button id="wizard-save-schedule-btn" class="primary-btn">Дальше</button>
+          <button id="wizard-skip-schedule-btn" class="link-btn neutral">Пропустить</button>
+        </div>
+
+        <div id="wizard-step-3" class="hidden">
+          <div class="success-icon">🎉</div>
+          <h1 class="center">Запись настроена</h1>
+          <p class="hint center">Проверьте услуги во вкладке «Позиции»: добавьте фото, измените цены. Чтобы увидеть запись глазами клиента, переключитесь на «Запись» вверху.</p>
+          <button id="wizard-finish-btn" class="primary-btn">Перейти к позициям</button>
+        </div>
+      </section>
 
       <!-- Список заявок -->
       <section id="admin-screen-orders" class="screen">
@@ -460,6 +528,6 @@
 
   </div>
 
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>

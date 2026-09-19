@@ -16,6 +16,7 @@ from aiogram.types import Update
 import database
 import notifications
 import webhooks
+from templates import NICHE_TEMPLATES, TEMPLATES_BY_ID
 from config import SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, BOT_TOKEN, DEV_SKIP_INITDATA_CHECK
 from bot import dp as tg_dp
 from telegram_auth import verify_init_data
@@ -116,6 +117,13 @@ class SavedThemeRequest(ThemeRequest):
 class MediaUploadRequest(BaseModel):
     business_id: int
     data_url: str = Field(max_length=1_000_000)   # data:image/...;base64,... (~730 КБ картинки)
+    init_data: str = ""
+    owner_tg_id: int | None = None
+
+
+class OnboardingApplyRequest(BaseModel):
+    business_id: int
+    niche_id: str
     init_data: str = ""
     owner_tg_id: int | None = None
 
@@ -550,6 +558,37 @@ def admin_delete_service(service_id: int, business_id: int, init_data: str = "",
         raise HTTPException(status_code=404, detail="Позиция не найдена")
     database.delete_service(business["id"], service_id)
     return {"ok": True}
+
+
+@app.get("/api/admin/onboarding")
+def admin_onboarding(business_id: int, init_data: str = "", owner_tg_id: int | None = None):
+    """Данные для мастера первого запуска: нужен ли он (нет ни одной позиции) и шаблоны ниш."""
+    business = resolve_business(business_id)
+    check_owner(business, init_data, owner_tg_id)
+    return {
+        "needs_setup": database.count_services(business["id"]) == 0,
+        "niches": NICHE_TEMPLATES,
+        "schedule": database.get_schedule(business["id"]),
+    }
+
+
+@app.post("/api/admin/onboarding/apply")
+def admin_onboarding_apply(payload: OnboardingApplyRequest):
+    """Создаёт услуги из шаблона ниши. Только для бизнеса без позиций — так двойной тап или
+    повторный вызов не наплодит дубликаты и не затрёт то, что владелец уже настроил."""
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    template = TEMPLATES_BY_ID.get(payload.niche_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Такой шаблон не найден")
+    if database.count_services(business["id"]) > 0:
+        raise HTTPException(status_code=409, detail="Услуги уже добавлены")
+    for service in template["services"]:
+        database.create_service(
+            business["id"], service["name"], service["price"], service["duration_min"], "slot",
+            service["description"], None,
+        )
+    return {"ok": True, "created": len(template["services"])}
 
 
 @app.get("/api/admin/masters")

@@ -90,6 +90,7 @@ const adminScreens = {
   masters: el("admin-screen-masters"),
   "master-form": el("admin-screen-master-form"),
   settings: el("admin-screen-settings"),
+  wizard: el("admin-screen-wizard"),
   theme: el("admin-screen-theme"),
   schedule: el("admin-screen-schedule"),
 };
@@ -326,6 +327,11 @@ function switchMode(mode) {
 async function loadServices() {
   state.services = await api(`/api/services?${qs({ business_id: state.businessId })}`);
   el("business-title").textContent = state.config.business_name || "Выберите услугу";
+  const emptyMsg = el("no-services-msg");
+  emptyMsg.textContent = state.isOwner
+    ? "Пока нет ни одной услуги. Добавьте их во вкладке «Управление» → «Позиции»."
+    : "Запись скоро откроется — владелец ещё настраивает услуги. Загляните позже!";
+  emptyMsg.classList.toggle("hidden", state.services.length > 0);
   const list = el("services-list");
   list.innerHTML = "";
   state.services.forEach((service) => {
@@ -692,7 +698,9 @@ async function submitBooking() {
 document.querySelectorAll("[data-back]").forEach((btn) => {
   btn.addEventListener("click", () => {
     const target = btn.dataset.back;
-    if (target.startsWith("admin-")) {
+    if (state.admin.wizardActive && target === "admin-services") {
+      showAdminScreen("wizard");
+    } else if (target.startsWith("admin-")) {
       showAdminScreen(target.slice("admin-".length));
     } else {
       showScreen(target);
@@ -928,6 +936,10 @@ el("save-service-btn").addEventListener("click", async () => {
         method: "POST",
         body: JSON.stringify(payload),
       });
+    }
+    if (state.admin.wizardActive) {
+      showWizardStep(2);
+      return;
     }
     showAdminScreen("services");
     loadAdminServices();
@@ -1344,6 +1356,147 @@ el("save-variant-btn").addEventListener("click", async () => {
 });
 
 // ======================================================================
+// Мастер первого запуска: ниша → рабочие часы → готово
+// ======================================================================
+
+async function maybeStartWizard() {
+  if (!state.isOwner) return;
+  let onboarding;
+  try {
+    onboarding = await api(`/api/admin/onboarding?${qs(adminAuth())}`);
+  } catch (e) {
+    return; // например, нет подписи Telegram — просто без мастера
+  }
+  if (!onboarding.needs_setup) return;
+
+  state.admin.wizardActive = true;
+  state.admin.wizardNiches = onboarding.niches;
+  state.admin.wizardSelected = null;
+  state.admin.wizardSchedule = onboarding.schedule;
+  document.querySelector(".admin-tabs").classList.add("hidden");
+  switchMode("admin");
+  showAdminScreen("wizard");
+  renderWizardNiches();
+  showWizardStep(1);
+}
+
+function showWizardStep(step) {
+  [1, 2, 3].forEach((n) => el(`wizard-step-${n}`).classList.toggle("hidden", n !== step));
+  el("wizard-step-label").textContent = `Шаг ${step} из 3`;
+  showAdminScreen("wizard");
+  if (step === 2) fillWizardSchedule();
+  window.scrollTo(0, 0);
+}
+
+// «1 услуга, 3 услуги, 5 услуг»
+function pluralRu(n, forms) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return forms[0];
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return forms[1];
+  return forms[2];
+}
+
+function renderWizardNiches() {
+  const list = el("wizard-niches");
+  list.innerHTML = "";
+  state.admin.wizardNiches.forEach((niche) => {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.dataset.niche = niche.id;
+    card.innerHTML = `
+      <div class="card-body">
+        <div class="title">${niche.emoji} ${escapeHtml(niche.title)}</div>
+        <div class="meta">${niche.services.length} ${pluralRu(niche.services.length, ["услуга", "услуги", "услуг"])} в примере</div>
+      </div>
+      <span class="chev">›</span>
+    `;
+    card.addEventListener("click", () => selectWizardNiche(niche.id));
+    list.appendChild(card);
+  });
+}
+
+function selectWizardNiche(nicheId) {
+  state.admin.wizardSelected = nicheId;
+  const niche = state.admin.wizardNiches.find((n) => n.id === nicheId);
+  document.querySelectorAll("#wizard-niches .card").forEach((c) => c.classList.toggle("selected", c.dataset.niche === nicheId));
+  el("wizard-preview-list").innerHTML = niche.services
+    .map((s) => `<div class="row"><span>${escapeHtml(s.name)}</span><span>${s.price} ₽ · ${s.duration_min} мин</span></div>`)
+    .join("");
+  el("wizard-preview").classList.remove("hidden");
+  el("wizard-preview").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+el("wizard-apply-btn").addEventListener("click", async () => {
+  if (!state.admin.wizardSelected) return;
+  const btn = el("wizard-apply-btn");
+  btn.disabled = true;
+  try {
+    await api("/api/admin/onboarding/apply", {
+      method: "POST",
+      body: JSON.stringify({ ...adminAuth(), niche_id: state.admin.wizardSelected }),
+    });
+    showWizardStep(2);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+el("wizard-empty-btn").addEventListener("click", () => openServiceForm(null));
+
+// Часовой пояс — те же варианты, что на вкладке «Расписание»; по умолчанию берём пояс телефона владельца.
+function fillWizardSchedule() {
+  const tzSelect = el("wizard-timezone");
+  if (!tzSelect.options.length) tzSelect.innerHTML = el("schedule-timezone").innerHTML;
+  const niche = state.admin.wizardNiches.find((n) => n.id === state.admin.wizardSelected);
+  const base = { ...state.admin.wizardSchedule, ...(niche ? niche.schedule : {}) };
+  let deviceTz = "";
+  try { deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) { /* не критично */ }
+  const hasOption = (tz) => [...tzSelect.options].some((o) => o.value === tz);
+  tzSelect.value = hasOption(deviceTz) ? deviceTz : base.timezone;
+  el("wizard-start").value = base.work_start_hour;
+  el("wizard-end").value = base.work_end_hour;
+  el("wizard-step").value = base.slot_step_minutes;
+  el("wizard-days").value = base.days_ahead;
+}
+
+el("wizard-save-schedule-btn").addEventListener("click", async () => {
+  const payload = {
+    ...adminAuth(),
+    timezone: el("wizard-timezone").value,
+    work_start_hour: parseInt(el("wizard-start").value, 10),
+    work_end_hour: parseInt(el("wizard-end").value, 10),
+    slot_step_minutes: parseInt(el("wizard-step").value, 10),
+    days_ahead: parseInt(el("wizard-days").value, 10),
+  };
+  if (Object.values(payload).some((v) => typeof v === "number" && isNaN(v))) {
+    alert("Заполните часы работы и количество дней");
+    return;
+  }
+  if (payload.work_end_hour <= payload.work_start_hour) {
+    alert("Время закрытия должно быть позже времени открытия");
+    return;
+  }
+  try {
+    await api("/api/admin/schedule", { method: "PUT", body: JSON.stringify(payload) });
+    showWizardStep(3);
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+el("wizard-skip-schedule-btn").addEventListener("click", () => showWizardStep(3));
+
+el("wizard-finish-btn").addEventListener("click", async () => {
+  state.admin.wizardActive = false;
+  document.querySelector(".admin-tabs").classList.remove("hidden");
+  await loadServices(); // клиентский вид теперь с услугами
+  el("admin-tab-services").click();
+});
+
+// ======================================================================
 // АДМИН-РЕЖИМ: настройки (телефон клиента, политика)
 // ======================================================================
 
@@ -1430,6 +1583,7 @@ async function init() {
   setupModeSwitch();
   await loadServices();
   showScreen("services");
+  await maybeStartWizard();
 }
 
 init();

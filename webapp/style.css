@@ -867,6 +867,42 @@ h1 {
   gap: 8px;
 }
 
+/* ===== Мастер первого запуска ===== */
+.empty-state {
+  text-align: center;
+  padding: 26px 12px;
+  font-size: 15px;
+}
+
+.wizard-preview {
+  margin-top: 16px;
+}
+
+.wizard-preview .summary-card .row {
+  gap: 12px;
+}
+
+.wizard-preview .summary-card .row span:last-child {
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+h1.center,
+p.center {
+  text-align: center;
+}
+
+.link-btn.neutral {
+  display: block;
+  margin: 8px auto 0;
+  color: var(--hint);
+}
+
+#wizard-niches .card.selected .meta {
+  color: inherit;
+  opacity: 0.85;
+}
+
 /* ===== Мои записи ===== */
 .my-bookings-link {
   margin-bottom: 14px;

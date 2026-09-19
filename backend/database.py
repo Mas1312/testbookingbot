@@ -2,7 +2,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
-from config import DB_PATH, DEFAULT_THEME, DEFAULT_SCHEDULE
+from config import DB_PATH, DEFAULT_THEME, DEFAULT_SCHEDULE, SEED_DEMO_SERVICES
 
 
 def get_connection():
@@ -197,9 +197,9 @@ def _seed_demo_services(conn, business_id: int):
 
 
 def create_business(owner_tg_id: int, name: str, bot_token: str):
-    """Заводит новый бизнес (свой Telegram-бот, свой владелец) с демо-позициями,
-    темой и расписанием по умолчанию. Пока вызывается вручную/скриптом или через
-    /newbusiness — полноценная форма настройки расписания будет в админке после."""
+    """Заводит новый бизнес (свой Telegram-бот, свой владелец) с темой и расписанием по
+    умолчанию. Позиций нет: их владелец добавляет в мастере первого запуска (см. templates.py).
+    Демо-позиции добавляются только при SEED_DEMO_SERVICES=true (локальная разработка)."""
     conn = get_connection()
     cur = conn.execute(
         """
@@ -222,7 +222,8 @@ def create_business(owner_tg_id: int, name: str, bot_token: str):
         ),
     )
     business_id = cur.lastrowid
-    _seed_demo_services(conn, business_id)
+    if SEED_DEMO_SERVICES:
+        _seed_demo_services(conn, business_id)
     conn.commit()
     row = conn.execute("SELECT * FROM businesses WHERE id = ?", (business_id,)).fetchone()
     conn.close()
@@ -460,6 +461,14 @@ def get_services(business_id: int, active_only: bool = True):
     rows = conn.execute(query, (business_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def count_services(business_id: int) -> int:
+    """Все позиции бизнеса, включая скрытые — «пусто» значит, что владелец ещё ничего не настраивал."""
+    conn = get_connection()
+    n = conn.execute("SELECT COUNT(*) FROM services WHERE business_id = ?", (business_id,)).fetchone()[0]
+    conn.close()
+    return n
 
 
 def get_service(business_id: int, service_id: int):
