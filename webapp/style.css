@@ -656,6 +656,24 @@ h1 {
   opacity: 0.5;
 }
 
+/* ===== Мои записи ===== */
+.my-bookings-link {
+  margin-bottom: 14px;
+}
+
+.section-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--hint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 6px 2px 8px;
+}
+
+.order-card.past {
+  opacity: 0.75;
+}
+
 /* ===== Мастера: переключатель и список услуг ===== */
 .toggle-row {
   display: flex;

@@ -75,6 +75,7 @@ const el = (id) => document.getElementById(id);
 
 const screens = {
   services: el("screen-services"),
+  my: el("screen-my"),
   masters: el("screen-masters"),
   dates: el("screen-dates"),
   slots: el("screen-slots"),
@@ -213,6 +214,78 @@ async function loadServices() {
     card.addEventListener("click", () => selectService(service));
     list.appendChild(card);
   });
+}
+
+// ======================================================================
+// «Мои записи» (клиент): список своих записей и отмена
+// ======================================================================
+
+const clientAuth = () => ({ init_data: state.initData, client_tg_id: state.myTgId, business_id: state.businessId });
+
+el("my-bookings-btn").addEventListener("click", openMyBookings);
+el("done-my-btn").addEventListener("click", openMyBookings);
+
+async function openMyBookings() {
+  tg.MainButton.hide();
+  showScreen("my");
+  await loadMyBookings();
+}
+
+function renderMyBooking(booking) {
+  const card = document.createElement("div");
+  card.className = "order-card" + (booking.can_cancel ? "" : " past");
+  const whenText = booking.date ? `${formatDateLabel(booking.date).top} в ${booking.time}` : "разовый заказ";
+  const qtyText = booking.quantity > 1 ? ` × ${booking.quantity}` : "";
+  card.innerHTML = `
+    <div class="order-top">
+      <div>
+        <div class="order-title">${escapeHtml(booking.service_name)}${qtyText}</div>
+        <div class="order-meta">${whenText}</div>
+        ${booking.master_name ? `<div class="order-meta">Мастер: ${escapeHtml(booking.master_name)}</div>` : ""}
+        <div class="order-meta">${booking.price * booking.quantity} ₽</div>
+      </div>
+      <span class="status-badge status-${booking.status}">${statusLabels[booking.status] || booking.status}</span>
+    </div>
+    ${booking.can_cancel ? `<div class="order-actions"><button class="btn-cancel">Отменить запись</button></div>` : ""}
+  `;
+  const cancelBtn = card.querySelector(".btn-cancel");
+  if (cancelBtn) cancelBtn.addEventListener("click", () => cancelMyBooking(booking));
+  return card;
+}
+
+async function loadMyBookings() {
+  const upcomingList = el("my-upcoming-list");
+  const historyList = el("my-history-list");
+  upcomingList.innerHTML = "";
+  historyList.innerHTML = "";
+  ["my-upcoming-title", "my-history-title", "my-empty-msg", "my-error-msg"].forEach((id) => el(id).classList.add("hidden"));
+
+  let bookings;
+  try {
+    bookings = await api(`/api/my-bookings?${qs(clientAuth())}`);
+  } catch (e) {
+    el("my-error-msg").textContent = e.message;
+    el("my-error-msg").classList.remove("hidden");
+    return;
+  }
+
+  const upcoming = bookings.filter((b) => b.can_cancel);
+  const history = bookings.filter((b) => !b.can_cancel);
+  upcoming.forEach((b) => upcomingList.appendChild(renderMyBooking(b)));
+  history.forEach((b) => historyList.appendChild(renderMyBooking(b)));
+  el("my-upcoming-title").classList.toggle("hidden", upcoming.length === 0);
+  el("my-history-title").classList.toggle("hidden", history.length === 0);
+  el("my-empty-msg").classList.toggle("hidden", bookings.length > 0);
+}
+
+async function cancelMyBooking(booking) {
+  if (!confirm("Отменить эту запись?")) return;
+  try {
+    await api(`/api/my-bookings/${booking.id}/cancel`, { method: "POST", body: JSON.stringify(clientAuth()) });
+  } catch (e) {
+    alert(e.message);
+  }
+  loadMyBookings();
 }
 
 function selectService(service) {

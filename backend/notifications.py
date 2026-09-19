@@ -8,7 +8,7 @@
 только логируется: заявка от этого не должна ни теряться, ни падать с 500."""
 import html
 import logging
-from datetime import date as date_cls
+from datetime import date as date_cls, datetime, timedelta, timezone as dt_timezone
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -107,7 +107,25 @@ def client_text(booking: dict, status: str) -> str:
         return f"✅ Запись подтверждена: {what}. Ждём вас!"
     if status == "cancelled":
         return f"❌ К сожалению, запись отменена: {what}.\nМожно выбрать другое время — откройте запись заново."
+    if status == "cancelled_by_client":
+        return f"❌ Вы отменили запись: {what}."
     return ""
+
+
+def client_keyboard(booking: dict) -> InlineKeyboardMarkup | None:
+    """Кнопка отмены под сообщениями клиенту (двухшаговая, см. хендлер cx: в bot.py)."""
+    if booking["status"] not in ("new", "confirmed"):
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="❌ Отменить запись", callback_data=f"cx:ask:{booking['id']}"),
+    ]])
+
+
+def client_confirm_cancel_keyboard(booking_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Да, отменить", callback_data=f"cx:yes:{booking_id}"),
+        InlineKeyboardButton(text="Нет", callback_data=f"cx:no:{booking_id}"),
+    ]])
 
 
 async def _safe_send(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
@@ -128,14 +146,16 @@ async def notify_new_booking(business_id: int, booking_id: int):
     bot = get_bot(business)
     await _safe_send(bot, business["owner_tg_id"], owner_text(booking), reply_markup=owner_keyboard(booking))
     if booking["client_tg_id"] and booking["client_tg_id"] != business["owner_tg_id"]:
-        await _safe_send(bot, booking["client_tg_id"], client_text(booking, "new"))
+        await _safe_send(bot, booking["client_tg_id"], client_text(booking, "new"),
+                         reply_markup=client_keyboard(booking))
 
 
 async def notify_client_status(business: dict, booking: dict, status: str):
     """Сообщает клиенту о подтверждении/отмене. Про другие статусы молчим."""
     if status not in ("confirmed", "cancelled") or not booking["client_tg_id"]:
         return
-    await _safe_send(get_bot(business), booking["client_tg_id"], client_text(booking, status))
+    await _safe_send(get_bot(business), booking["client_tg_id"], client_text(booking, status),
+                     reply_markup=client_keyboard(booking))
 
 
 async def change_status(business: dict, booking_id: int, status: str, allowed_from: set[str] | None = None):
@@ -151,3 +171,90 @@ async def change_status(business: dict, booking_id: int, status: str, allowed_fr
     booking["status"] = status
     await notify_client_status(business, booking, status)
     return booking, True
+
+
+async def cancel_by_client(business: dict, booking_id: int, client_tg_id: int):
+    """Отмена записи самим клиентом («Мои записи» или кнопка в чате). Освобождает слот и
+    сообщает владельцу. Возвращает (booking, result): result — "ok" | "not_found" | "not_cancellable".
+    Чужая заявка неотличима от несуществующей — не подсказываем, что такой id есть."""
+    booking = database.get_booking(business["id"], booking_id)
+    if not booking or booking["client_tg_id"] != client_tg_id:
+        return None, "not_found"
+    if not database.can_cancel_booking(booking, business["timezone"]):
+        return booking, "not_cancellable"
+    database.update_booking_status(business["id"], booking_id, "cancelled")
+    booking["status"] = "cancelled"
+    await _safe_send(
+        get_bot(business), business["owner_tg_id"],
+        "❌ <b>Клиент отменил запись</b>\n" + owner_text(booking),
+    )
+    return booking, "ok"
+
+
+# ---------- Напоминания ----------
+
+REMINDER_INTERVAL_SECONDS = 60
+
+
+def reminder_text(booking: dict, timezone: str) -> str:
+    today = database._now_in_business_tz(timezone).date()
+    try:
+        days = (date_cls.fromisoformat(booking["date"]) - today).days
+    except ValueError:
+        days = None
+    day = {0: "сегодня", 1: "завтра"}.get(days, _when(booking).split(" в ")[0])
+    text = f"⏰ Напоминаем о записи {day} в {booking['time']}: {_title(booking)}"
+    if booking["master_name"]:
+        text += f" (мастер: {_e(booking['master_name'])})"
+    return text + "."
+
+
+def _parse_created_at(value: str | None) -> datetime | None:
+    """created_at в SQLite — UTC без пояса ('YYYY-MM-DD HH:MM:SS')."""
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=dt_timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+async def send_due_reminders(now: datetime | None = None) -> int:
+    """Шлёт клиентам напоминания за сутки и за 2 часа до записи. Возвращает число отправленных.
+
+    Правила:
+      - Флаги ставим ДО отправки: если клиент заблокировал бота, не долбим его каждую минуту.
+      - Если подошли оба окна сразу (сервер спал), шлём одно — «ближайшее» (за 2 часа).
+      - Напоминание не шлём, если клиент записался уже внутри этого окна (записался за 5 часов —
+        «за сутки» не нужно; за 90 минут — не нужно и «за 2 часа»).
+      - Время в тексте абсолютное («завтра в 14:00»), поэтому опоздавшее напоминание не врёт."""
+    now = now or datetime.now(dt_timezone.utc)
+    sent = 0
+    for row in database.get_reminder_candidates():
+        start = database.booking_start(row["date"], row["time"], row["timezone"])
+        if start is None:
+            continue
+        left = start - now
+        due = []
+        if not row["reminded_24h"] and left <= timedelta(hours=24):
+            due.append("24h")
+        if not row["reminded_2h"] and left <= timedelta(hours=2):
+            due.append("2h")
+        if not due:
+            continue
+        database.mark_reminded(row["id"], due)
+        if left <= timedelta(0):
+            continue  # запись уже началась/прошла
+
+        window = timedelta(hours=2) if "2h" in due else timedelta(hours=24)
+        created = _parse_created_at(row["created_at"])
+        if created is not None and start - created < window:
+            continue
+
+        business = database.get_business(row["business_id"])
+        booking = database.get_booking(row["business_id"], row["id"])
+        if not business or not booking:
+            continue
+        if await _safe_send(get_bot(business), booking["client_tg_id"],
+                            reminder_text(booking, business["timezone"]),
+                            reply_markup=client_keyboard(booking)):
+            sent += 1
+    return sent

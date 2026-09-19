@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 from config import DB_PATH, DEFAULT_THEME, DEFAULT_SCHEDULE
 
@@ -124,6 +124,9 @@ def init_db():
         # Имя — снимок на момент брони, как и у услуги.
         "master_id": "INTEGER",
         "master_name": "TEXT",
+        # Отправлены ли напоминания клиенту (за сутки / за 2 часа) — чтобы не слать дважды.
+        "reminded_24h": "INTEGER NOT NULL DEFAULT 0",
+        "reminded_2h": "INTEGER NOT NULL DEFAULT 0",
     })
 
     conn.commit()
@@ -557,6 +560,68 @@ def get_booking(business_id: int, booking_id: int):
     row = conn.execute(_BOOKING_SELECT + " AND b.id = ?", (business_id, booking_id)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_client_bookings(business_id: int, client_tg_id: int, limit: int = 50):
+    """Заявки конкретного клиента в этом бизнесе, новые сверху (для «Мои записи»)."""
+    conn = get_connection()
+    rows = conn.execute(
+        _BOOKING_SELECT + " AND b.client_tg_id = ? ORDER BY b.created_at DESC, b.id DESC LIMIT ?",
+        (business_id, client_tg_id, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def booking_start(date: str | None, time: str | None, timezone: str) -> datetime | None:
+    """Момент начала записи (с часовым поясом бизнеса) или None для заказов без слота."""
+    if not date or not time:
+        return None
+    try:
+        tz = ZoneInfo(timezone)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    try:
+        return datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+    except ValueError:
+        return None
+
+
+def can_cancel_booking(booking: dict, timezone: str) -> bool:
+    """Отменить можно, пока запись активна (новая/подтверждённая) и время ещё не наступило.
+    Заказы без слота — пока не обработаны владельцем."""
+    if booking["status"] not in ("new", "confirmed"):
+        return False
+    start = booking_start(booking["date"], booking["time"], timezone)
+    return start is None or start > datetime.now(dt_timezone.utc)
+
+
+def get_reminder_candidates():
+    """Активные записи со слотом и известным клиентом, по которым ещё не отправлены
+    все напоминания. Грубый предфильтр по дате — точное время считает вызывающий код."""
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT b.id, b.business_id, b.date, b.time, b.created_at, b.reminded_24h, b.reminded_2h,
+               bz.timezone
+        FROM bookings b JOIN businesses bz ON bz.id = b.business_id
+        WHERE b.date IS NOT NULL AND b.time IS NOT NULL AND b.client_tg_id IS NOT NULL
+          AND b.status IN ('new', 'confirmed')
+          AND (b.reminded_24h = 0 OR b.reminded_2h = 0)
+          AND b.date >= date('now', '-1 day')
+        """
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def mark_reminded(booking_id: int, kinds: list[str]):
+    columns = {"24h": "reminded_24h", "2h": "reminded_2h"}
+    conn = get_connection()
+    for kind in kinds:
+        conn.execute(f"UPDATE bookings SET {columns[kind]} = 1 WHERE id = ?", (booking_id,))
+    conn.commit()
+    conn.close()
 
 
 def update_booking_status(business_id: int, booking_id: int, status: str):

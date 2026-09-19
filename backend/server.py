@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -46,6 +47,12 @@ class BookingRequest(BaseModel):
     comment: str | None = None
     client_name: str = "Клиент"
     init_data: str = ""              # подпись Telegram WebApp — из неё берём настоящий id клиента
+    client_tg_id: int | None = None  # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
+
+
+class CancelRequest(BaseModel):
+    business_id: int
+    init_data: str = ""              # подпись Telegram WebApp — из неё берём id клиента
     client_tg_id: int | None = None  # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
 
 
@@ -139,6 +146,17 @@ def check_owner(business: dict, init_data: str, owner_tg_id_fallback: int | None
         raise HTTPException(status_code=403, detail="Доступно только владельцу")
 
 
+def resolve_client(business: dict, init_data: str, client_tg_id_fallback: int | None = None) -> int:
+    """Telegram id клиента из подписанного initData (как check_owner — для владельца).
+    Присланному id верим только в дев-режиме."""
+    user_id = verify_init_data(init_data, business["bot_token"])
+    if user_id is None and DEV_SKIP_INITDATA_CHECK and client_tg_id_fallback:
+        user_id = client_tg_id_fallback
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="Откройте запись через Telegram, чтобы увидеть свои записи")
+    return user_id
+
+
 def resolve_master(business: dict, service: dict, master_id: int | None):
     """Мастер для записи на позицию по расписанию. None — если выбор мастера у бизнеса
     выключен или позиция без расписания (разовый заказ); иначе мастер обязателен, должен
@@ -166,6 +184,23 @@ def on_startup():
     database.init_db()
     business = database.get_or_create_business_from_env(BOT_TOKEN, OWNER_TG_ID, BUSINESS_NAME)
     DEFAULT_BUSINESS_ID = business["id"]
+
+
+async def reminder_loop():
+    """Раз в минуту проверяет, кому пора отправить напоминание о записи. Ошибка одной
+    итерации не должна убивать цикл — иначе напоминания молча прекратятся до рестарта."""
+    while True:
+        try:
+            await notifications.send_due_reminders()
+        except Exception:
+            logging.exception("Сбой цикла напоминаний")
+        await asyncio.sleep(notifications.REMINDER_INTERVAL_SECONDS)
+
+
+@app.on_event("startup")
+async def on_startup_reminders():
+    # Ссылку держим в app.state — иначе сборщик мусора может прибить фоновую задачу.
+    app.state.reminder_task = asyncio.create_task(reminder_loop())
 
 
 @app.on_event("startup")
@@ -297,6 +332,41 @@ def api_book(booking: BookingRequest, background_tasks: BackgroundTasks):
         "date": date,
         "time": time,
     }
+
+
+@app.get("/api/my-bookings")
+def api_my_bookings(business_id: int, init_data: str = "", client_tg_id: int | None = None):
+    """Записи текущего клиента: сначала предстоящие (их можно отменить), затем история."""
+    business = resolve_business(business_id)
+    tg_id = resolve_client(business, init_data, client_tg_id)
+    result = []
+    for b in database.get_client_bookings(business["id"], tg_id):
+        result.append({
+            "id": b["id"],
+            "service_name": b["service_name"],
+            "master_name": b["master_name"],
+            "date": b["date"],
+            "time": b["time"],
+            "quantity": b["quantity"],
+            "price": b["price"],
+            "status": b["status"],
+            "can_cancel": database.can_cancel_booking(b, business["timezone"]),
+        })
+    upcoming = sorted((r for r in result if r["can_cancel"]), key=lambda r: (r["date"] or "9999", r["time"] or ""))
+    history = [r for r in result if not r["can_cancel"]]
+    return upcoming + history
+
+
+@app.post("/api/my-bookings/{booking_id}/cancel")
+async def api_cancel_my_booking(booking_id: int, payload: CancelRequest):
+    business = resolve_business(payload.business_id)
+    tg_id = resolve_client(business, payload.init_data, payload.client_tg_id)
+    _, result = await notifications.cancel_by_client(business, booking_id, tg_id)
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Запись не найдена")
+    if result == "not_cancellable":
+        raise HTTPException(status_code=409, detail="Эту запись уже нельзя отменить")
+    return {"ok": True}
 
 
 # ---------- Админ-API (только для владельца, проверяется owner_tg_id) ----------

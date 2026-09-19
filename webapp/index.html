@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Запись онлайн</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="style.css?v=4" />
+  <link rel="stylesheet" href="style.css?v=5" />
 </head>
 <body>
   <header id="brand-bar">
@@ -27,7 +27,19 @@
       <section id="screen-services" class="screen">
         <h1 id="business-title">Выберите услугу</h1>
         <p class="screen-subtitle">Быстро, без звонков — в пару касаний</p>
+        <button id="my-bookings-btn" class="add-btn my-bookings-link">📋 Мои записи</button>
         <div id="services-list" class="list"></div>
+      </section>
+
+      <section id="screen-my" class="screen hidden">
+        <button class="back-btn" data-back="services">← Назад</button>
+        <h1>Мои записи</h1>
+        <div id="my-upcoming-title" class="section-label hidden">Предстоящие</div>
+        <div id="my-upcoming-list" class="list"></div>
+        <div id="my-history-title" class="section-label hidden">История</div>
+        <div id="my-history-list" class="list"></div>
+        <p id="my-empty-msg" class="hint hidden">У вас пока нет записей.</p>
+        <p id="my-error-msg" class="hint hidden"></p>
       </section>
 
       <section id="screen-masters" class="screen hidden">
@@ -74,7 +86,8 @@
         <div class="success-icon">✅</div>
         <h1>Готово!</h1>
         <div id="done-summary" class="summary-card"></div>
-        <p class="hint">Владелец получит вашу заявку.</p>
+        <p class="hint">Владелец получит вашу заявку. Ответ придёт сюда, в чат с ботом.</p>
+        <button id="done-my-btn" class="add-btn">📋 Мои записи</button>
       </section>
 
     </div>
@@ -302,6 +315,6 @@
 
   </div>
 
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>

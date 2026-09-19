@@ -42,7 +42,7 @@ async def cmd_start(message: Message, business_id: int):
     )
     text = (
         f"Привет! Это бот записи «{business_name}».\n\n"
-        "Нажми кнопку ниже, чтобы выбрать услугу и удобное время."
+        "Нажми кнопку ниже, чтобы выбрать услугу и удобное время. Свои записи — /my."
     )
     if business and message.from_user.id == business["owner_tg_id"]:
         text += "\n\n🔔 Вы владелец: новые заявки будут приходить сюда с кнопками «Подтвердить / Отклонить»."
@@ -90,6 +90,76 @@ async def on_booking_button(callback: CallbackQuery, business_id: int):
             )
         except Exception:
             logging.debug("Карточка заявки не изменилась", exc_info=True)
+
+
+@dp.message(Command("my"))
+async def cmd_my(message: Message, business_id: int):
+    """Предстоящие записи клиента в чате — каждая с кнопкой отмены."""
+    business = database.get_business(business_id)
+    if not business:
+        return
+    upcoming = [
+        b for b in database.get_client_bookings(business_id, message.from_user.id)
+        if database.can_cancel_booking(b, business["timezone"])
+    ]
+    if not upcoming:
+        await message.answer("У вас нет предстоящих записей. Нажмите /start, чтобы записаться.")
+        return
+    upcoming.sort(key=lambda b: (b["date"] or "9999", b["time"] or ""))
+    for booking in upcoming[:5]:
+        await message.answer(
+            notifications.client_text(booking, booking["status"]),
+            parse_mode="HTML",
+            reply_markup=notifications.client_keyboard(booking),
+        )
+
+
+@dp.callback_query(F.data.startswith("cx:"))
+async def on_client_cancel_button(callback: CallbackQuery, business_id: int):
+    """Отмена записи клиентом из чата: cx:ask|yes|no:<id заявки>. Отмена в два шага —
+    чтобы случайное касание кнопки под напоминанием не стоило клиенту записи."""
+    business = database.get_business(business_id)
+    try:
+        _, action, booking_id = callback.data.split(":")
+        booking_id = int(booking_id)
+    except ValueError:
+        await callback.answer()
+        return
+    booking = database.get_booking(business_id, booking_id) if business else None
+    # Кнопки видит только сам клиент, но callback_data подделать может кто угодно.
+    if not booking or booking["client_tg_id"] != callback.from_user.id:
+        await callback.answer("Запись не найдена", show_alert=True)
+        return
+
+    async def set_markup(markup):
+        if callback.message:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=markup)
+            except Exception:
+                logging.debug("Не удалось обновить кнопки", exc_info=True)
+
+    if action == "ask":
+        await set_markup(notifications.client_confirm_cancel_keyboard(booking_id))
+        await callback.answer("Отменить запись?")
+    elif action == "no":
+        await set_markup(notifications.client_keyboard(booking))
+        await callback.answer()
+    elif action == "yes":
+        booking, result = await notifications.cancel_by_client(business, booking_id, callback.from_user.id)
+        if result == "ok":
+            await callback.answer("Запись отменена")
+            if callback.message:
+                try:
+                    await callback.message.edit_text(
+                        notifications.client_text(booking, "cancelled_by_client"), parse_mode="HTML"
+                    )
+                except Exception:
+                    logging.debug("Не удалось обновить сообщение", exc_info=True)
+        else:
+            await callback.answer("Эту запись уже нельзя отменить", show_alert=True)
+            await set_markup(None)
+    else:
+        await callback.answer()
 
 
 # ======================================================================
