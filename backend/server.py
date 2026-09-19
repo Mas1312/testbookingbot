@@ -1,4 +1,6 @@
+import asyncio
 import hashlib
+import logging
 import os
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -122,17 +124,31 @@ def on_startup():
 async def on_startup_webhooks():
     """В облаке (USE_WEBHOOK=true) поднимаем вебхук для каждого бизнеса из БД —
     так не нужен отдельный always-on процесс на бизнес для polling, что важно для
-    бесплатных хостингов вроде Render, где живёт только один web-сервис."""
+    бесплатных хостингов вроде Render, где живёт только один web-сервис.
+
+    Важно: регистрация вебхуков идёт в фоне, а не блокирует старт (см. asyncio.create_task
+    ниже). Если бы мы делали await прямо в startup-хендлере, а Telegram API в этот момент
+    подвис или ответил медленно — сервер не успел бы открыть порт вовремя, Render счёл бы
+    деплой мёртвым (именно так уже падал один из деплоев: "Timed Out... no open ports
+    detected"), хотя к самому коду это отношения не имело."""
     if not USE_WEBHOOK:
         return
+    asyncio.create_task(_register_all_webhooks())
+
+
+async def _register_all_webhooks():
     for business in database.get_all_businesses():
         bot_instance = Bot(token=business["bot_token"])
         _bots_by_business[business["id"]] = bot_instance
-        await bot_instance.set_webhook(
-            url=f"{WEBAPP_URL}/webhook/{business['id']}",
-            secret_token=_webhook_secret_for(business["bot_token"]),
-            drop_pending_updates=True,
-        )
+        try:
+            async with asyncio.timeout(15):
+                await bot_instance.set_webhook(
+                    url=f"{WEBAPP_URL}/webhook/{business['id']}",
+                    secret_token=_webhook_secret_for(business["bot_token"]),
+                    drop_pending_updates=True,
+                )
+        except Exception:
+            logging.exception("Не удалось зарегистрировать вебхук для business_id=%s", business["id"])
 
 
 @app.post("/webhook/{business_id}")
