@@ -1,13 +1,14 @@
 import asyncio
 import os
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from aiogram.types import Update
 
 import database
+import notifications
 import webhooks
 from config import SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, BOT_TOKEN, DEV_SKIP_INITDATA_CHECK
 from bot import dp as tg_dp
@@ -43,7 +44,8 @@ class BookingRequest(BaseModel):
     quantity: int = 1
     comment: str | None = None
     client_name: str = "Клиент"
-    client_tg_id: int | None = None
+    init_data: str = ""              # подпись Telegram WebApp — из неё берём настоящий id клиента
+    client_tg_id: int | None = None  # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
 
 
 class ServiceRequest(BaseModel):
@@ -59,7 +61,7 @@ class ServiceRequest(BaseModel):
 
 class StatusRequest(BaseModel):
     business_id: int
-    status: str               # 'new' | 'done' | 'cancelled'
+    status: str               # 'new' | 'confirmed' | 'done' | 'cancelled'
     init_data: str = ""
     owner_tg_id: int | None = None
 
@@ -203,7 +205,7 @@ def api_slots(service_id: int, date: str, business_id: int | None = None):
 
 
 @app.post("/api/book")
-def api_book(booking: BookingRequest):
+def api_book(booking: BookingRequest, background_tasks: BackgroundTasks):
     business = resolve_business(booking.business_id)
     service = database.get_service(business["id"], booking.service_id)
     if not service:
@@ -220,11 +222,18 @@ def api_book(booking: BookingRequest):
         # Позиция без расписания — дата/время не нужны, это разовый заказ
         date, time = None, None
 
+    # id клиента берём только из подписанного initData: присланному в теле client_tg_id
+    # верить нельзя — иначе можно заставить бота слать сообщения любому пользователю.
+    client_tg_id = verify_init_data(booking.init_data, business["bot_token"])
+    if client_tg_id is None and DEV_SKIP_INITDATA_CHECK:
+        client_tg_id = booking.client_tg_id
+
     booking_id = database.create_booking(
         business["id"], booking.service_id, service["name"], service["price"], date, time,
-        booking.client_name, booking.client_tg_id,
+        booking.client_name, client_tg_id,
         quantity=max(1, booking.quantity), comment=booking.comment,
     )
+    background_tasks.add_task(notifications.notify_new_booking, business["id"], booking_id)
     return {
         "ok": True,
         "booking_id": booking_id,
@@ -283,12 +292,14 @@ def admin_list_bookings(business_id: int, init_data: str = "", owner_tg_id: int 
 
 
 @app.patch("/api/admin/bookings/{booking_id}")
-def admin_update_booking(booking_id: int, payload: StatusRequest):
+async def admin_update_booking(booking_id: int, payload: StatusRequest):
     business = resolve_business(payload.business_id)
     check_owner(business, payload.init_data, payload.owner_tg_id)
-    if payload.status not in ("new", "done", "cancelled"):
+    if payload.status not in ("new", "confirmed", "done", "cancelled"):
         raise HTTPException(status_code=400, detail="Неверный статус")
-    database.update_booking_status(business["id"], booking_id, payload.status)
+    booking, _ = await notifications.change_status(business, booking_id, payload.status)
+    if booking is None:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
     return {"ok": True}
 
 

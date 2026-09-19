@@ -594,6 +594,7 @@ h1 {
 }
 
 .status-new { background: #ffe8a3; color: #6b4e00; }
+.status-confirmed { background: color-mix(in srgb, var(--primary) 18%, transparent); color: var(--primary); }
 .status-done { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success); }
 .status-cancelled { background: color-mix(in srgb, var(--hint) 18%, transparent); color: var(--hint); }
 
@@ -613,6 +614,7 @@ h1 {
   cursor: pointer;
 }
 
+.btn-confirm { background: var(--primary); color: var(--primary-text); }
 .btn-done { background: var(--success); color: #fff; }
 .btn-cancel { background: var(--danger); color: #fff; }
 

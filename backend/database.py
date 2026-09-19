@@ -86,7 +86,7 @@ def init_db():
             time TEXT,                 -- HH:MM, NULL для заказов без слота
             quantity INTEGER NOT NULL DEFAULT 1,
             comment TEXT,
-            status TEXT DEFAULT 'new', -- new -> done / cancelled
+            status TEXT DEFAULT 'new', -- new -> confirmed -> done; из new/confirmed -> cancelled
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (business_id) REFERENCES businesses (id),
             FOREIGN KEY (service_id) REFERENCES services (id)
@@ -393,21 +393,24 @@ def create_booking(business_id, service_id, service_name, price, date, time, cli
     return booking_id
 
 
+# LEFT JOIN, а не JOIN: если позицию потом удалили, её прошлые заявки не должны
+# молча пропадать из истории (раньше INNER JOIN именно так и делал). Название/цену
+# берём из самой заявки (заморожены на момент брони, см. create_booking), а на
+# join к services переключаемся только для старых записей, сделанных до этой правки.
+_BOOKING_SELECT = """
+    SELECT b.id, b.date, b.time, b.client_name, b.client_tg_id, b.quantity,
+           b.comment, b.status, b.created_at,
+           COALESCE(b.service_name, s.name, 'Позиция удалена') as service_name,
+           COALESCE(b.price, s.price, 0) as price,
+           s.type as service_type
+    FROM bookings b LEFT JOIN services s ON s.id = b.service_id
+    WHERE b.business_id = ?
+"""
+
+
 def get_all_bookings(business_id: int, status: str = None):
-    # LEFT JOIN, а не JOIN: если позицию потом удалили, её прошлые заявки не должны
-    # молча пропадать из истории (раньше INNER JOIN именно так и делал). Название/цену
-    # берём из самой заявки (заморожены на момент брони, см. create_booking), а на
-    # join к services переключаемся только для старых записей, сделанных до этой правки.
     conn = get_connection()
-    query = """
-        SELECT b.id, b.date, b.time, b.client_name, b.client_tg_id, b.quantity,
-               b.comment, b.status, b.created_at,
-               COALESCE(b.service_name, s.name, 'Позиция удалена') as service_name,
-               COALESCE(b.price, s.price, 0) as price,
-               s.type as service_type
-        FROM bookings b LEFT JOIN services s ON s.id = b.service_id
-        WHERE b.business_id = ?
-    """
+    query = _BOOKING_SELECT
     params = [business_id]
     if status:
         query += " AND b.status = ?"
@@ -416,6 +419,13 @@ def get_all_bookings(business_id: int, status: str = None):
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_booking(business_id: int, booking_id: int):
+    conn = get_connection()
+    row = conn.execute(_BOOKING_SELECT + " AND b.id = ?", (business_id, booking_id)).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 def update_booking_status(business_id: int, booking_id: int, status: str):

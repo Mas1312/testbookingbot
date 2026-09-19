@@ -1,13 +1,14 @@
 import asyncio
 import logging
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 import database
+import notifications
 import webhooks
 from config import BOT_TOKEN, WEBAPP_URL
 
@@ -39,11 +40,56 @@ async def cmd_start(message: Message, business_id: int):
             [InlineKeyboardButton(text="📅 Записаться", web_app=WebAppInfo(url=webapp_url))]
         ]
     )
-    await message.answer(
+    text = (
         f"Привет! Это бот записи «{business_name}».\n\n"
-        "Нажми кнопку ниже, чтобы выбрать услугу и удобное время.",
-        reply_markup=keyboard,
+        "Нажми кнопку ниже, чтобы выбрать услугу и удобное время."
     )
+    if business and message.from_user.id == business["owner_tg_id"]:
+        text += "\n\n🔔 Вы владелец: новые заявки будут приходить сюда с кнопками «Подтвердить / Отклонить»."
+    await message.answer(text, reply_markup=keyboard)
+
+
+@dp.callback_query(F.data.startswith("bk:"))
+async def on_booking_button(callback: CallbackQuery, business_id: int):
+    """Кнопки под карточкой заявки в чате владельца: bk:<новый статус>:<id заявки>."""
+    business = database.get_business(business_id)
+    # Владельца проверяем по id нажавшего: callback_data подделать может кто угодно,
+    # а from_user Telegram подписывает сам.
+    if not business or callback.from_user.id != business["owner_tg_id"]:
+        await callback.answer("Доступно только владельцу", show_alert=True)
+        return
+
+    try:
+        _, status, booking_id = callback.data.split(":")
+        booking_id = int(booking_id)
+    except ValueError:
+        await callback.answer()
+        return
+    if status not in notifications.CHAT_TRANSITIONS:
+        await callback.answer()
+        return
+
+    booking, changed = await notifications.change_status(
+        business, booking_id, status, allowed_from=notifications.CHAT_TRANSITIONS[status]
+    )
+    if booking is None:
+        await callback.answer("Заявка не найдена", show_alert=True)
+        return
+    if changed:
+        await callback.answer("Готово, клиент уведомлён" if booking["client_tg_id"] else "Готово")
+    else:
+        # Уже обработана (в админке или повторное нажатие) — просто освежаем карточку.
+        await callback.answer("Статус уже изменён: " + notifications.STATUS_LINES.get(booking["status"], booking["status"]))
+
+    if callback.message:
+        try:
+            await callback.message.edit_text(
+                notifications.owner_text(booking),
+                parse_mode="HTML",
+                reply_markup=notifications.owner_keyboard(booking),
+            )
+        except Exception:
+            logging.debug("Карточка заявки не изменилась", exc_info=True)
 
 
 # ======================================================================
@@ -125,7 +171,9 @@ async def process_bot_token(message: Message, state: FSMContext):
         f"Готово! Бизнес «{business_name}» подключён к @{me.username}.\n\n"
         f"Напиши этому боту /start и нажми «Записаться» — откроется твоя Mini App. "
         "Там же, во вкладке «Управление», можно добавить услуги и настроить оформление "
-        "(доступно только тебе — вход по этому Telegram-аккаунту)."
+        "(доступно только тебе — вход по этому Telegram-аккаунту).\n\n"
+        "🔔 Важно: именно в этом боте нажми /start — иначе Telegram не даст ему присылать "
+        "тебе уведомления о новых заявках."
     )
 
 

@@ -342,6 +342,7 @@ async function submitBooking() {
         quantity: state.quantity,
         comment: state.comment || null,
         client_name: user ? `${user.first_name || ""} ${user.last_name || ""}`.trim() : "Гость",
+        init_data: state.initData,
         client_tg_id: user ? user.id : null,
       }),
     });
@@ -419,7 +420,7 @@ document.querySelectorAll(".filter-pill").forEach((pill) => {
   });
 });
 
-const statusLabels = { new: "Новая", done: "Выполнена", cancelled: "Отменена" };
+const statusLabels = { new: "Новая", confirmed: "Подтверждена", done: "Выполнена", cancelled: "Отменена" };
 
 async function loadAdminOrders() {
   const orders = await api(`/api/admin/bookings?${qs({
@@ -458,6 +459,7 @@ async function loadAdminOrders() {
       </div>
       ${order.comment ? `<div class="order-comment">💬 ${escapeHtml(order.comment)}</div>` : ""}
       <div class="order-actions">
+        ${order.status === "new" ? `<button class="btn-confirm" data-id="${order.id}" data-action="confirmed">Подтвердить</button>` : ""}
         <button class="btn-done" data-id="${order.id}" data-action="done">Выполнено</button>
         <button class="btn-cancel" data-id="${order.id}" data-action="cancelled">Отменить</button>
       </div>
