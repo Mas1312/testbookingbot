@@ -1,16 +1,14 @@
 import asyncio
-import hashlib
-import logging
 import os
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from aiogram import Bot
 from aiogram.types import Update
 
 import database
-from config import SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, WEBAPP_URL, BOT_TOKEN
+import webhooks
+from config import SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, BOT_TOKEN
 from bot import dp as tg_dp
 
 app = FastAPI(title="Booking Mini App API")
@@ -101,16 +99,6 @@ def check_owner(business: dict, owner_tg_id: int):
 # а не эта переменная напрямую.
 DEFAULT_BUSINESS_ID: int | None = None
 
-# business_id -> aiogram.Bot, создаются один раз при старте и переиспользуются
-# на каждый входящий вебхук-запрос (чтобы не открывать новую aiohttp-сессию на запрос).
-_bots_by_business: dict[int, Bot] = {}
-
-
-def _webhook_secret_for(bot_token: str) -> str:
-    """Детерминированный секрет для проверки X-Telegram-Bot-Api-Secret-Token,
-    свой у каждого бота, ничего дополнительно хранить/генерировать не нужно."""
-    return hashlib.sha256(bot_token.encode()).hexdigest()[:32]
-
 
 @app.on_event("startup")
 def on_startup():
@@ -130,33 +118,21 @@ async def on_startup_webhooks():
     ниже). Если бы мы делали await прямо в startup-хендлере, а Telegram API в этот момент
     подвис или ответил медленно — сервер не успел бы открыть порт вовремя, Render счёл бы
     деплой мёртвым (именно так уже падал один из деплоев: "Timed Out... no open ports
-    detected"), хотя к самому коду это отношения не имело."""
+    detected"), хотя к самому коду это отношения не имело.
+
+    Новые бизнесы, заведённые позже через /newbusiness (см. bot.py), регистрируют свой
+    вебхук сразу сами — им не нужно ждать следующего рестарта сервера."""
     if not USE_WEBHOOK:
         return
-    asyncio.create_task(_register_all_webhooks())
-
-
-async def _register_all_webhooks():
-    for business in database.get_all_businesses():
-        bot_instance = Bot(token=business["bot_token"])
-        _bots_by_business[business["id"]] = bot_instance
-        try:
-            async with asyncio.timeout(15):
-                await bot_instance.set_webhook(
-                    url=f"{WEBAPP_URL}/webhook/{business['id']}",
-                    secret_token=_webhook_secret_for(business["bot_token"]),
-                    drop_pending_updates=True,
-                )
-        except Exception:
-            logging.exception("Не удалось зарегистрировать вебхук для business_id=%s", business["id"])
+    asyncio.create_task(webhooks.register_all_webhooks(database.get_all_businesses()))
 
 
 @app.post("/webhook/{business_id}")
 async def telegram_webhook(business_id: int, request: Request):
-    bot_instance = _bots_by_business.get(business_id)
+    bot_instance = webhooks.bots_by_business.get(business_id)
     if not bot_instance:
         raise HTTPException(status_code=404, detail="Неизвестный бизнес")
-    expected_secret = _webhook_secret_for(bot_instance.token)
+    expected_secret = webhooks.webhook_secret_for(bot_instance.token)
     if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != expected_secret:
         raise HTTPException(status_code=403, detail="Неверный секрет вебхука")
     data = await request.json()
