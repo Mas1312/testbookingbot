@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from aiogram.types import Update
 
 import database
@@ -48,8 +48,8 @@ class BookingRequest(BaseModel):
 class ServiceRequest(BaseModel):
     business_id: int
     name: str
-    price: int
-    duration_min: int = 0
+    price: int = Field(ge=0)
+    duration_min: int = Field(default=0, ge=0)
     type: str = "slot"        # 'slot' или 'order'
     is_active: bool = True
     init_data: str = ""              # подпись Telegram WebApp — см. check_owner
@@ -73,7 +73,7 @@ class ThemeRequest(BaseModel):
     primary_text_color: str
     danger_color: str
     success_color: str
-    radius: int
+    radius: int = Field(ge=0, le=60)
     init_data: str = ""
     owner_tg_id: int | None = None
 

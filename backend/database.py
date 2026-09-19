@@ -325,12 +325,17 @@ def create_booking(business_id, service_id, date, time, client_name, client_tg_i
 
 
 def get_all_bookings(business_id: int, status: str = None):
+    # LEFT JOIN, а не JOIN: если позицию потом удалили, её прошлые заявки не должны
+    # молча пропадать из истории — раньше именно так и происходило (INNER JOIN просто
+    # выбрасывал такие строки).
     conn = get_connection()
     query = """
         SELECT b.id, b.date, b.time, b.client_name, b.client_tg_id, b.quantity,
                b.comment, b.status, b.created_at,
-               s.name as service_name, s.price, s.type as service_type
-        FROM bookings b JOIN services s ON s.id = b.service_id
+               COALESCE(s.name, 'Позиция удалена') as service_name,
+               COALESCE(s.price, 0) as price,
+               s.type as service_type
+        FROM bookings b LEFT JOIN services s ON s.id = b.service_id
         WHERE b.business_id = ?
     """
     params = [business_id]

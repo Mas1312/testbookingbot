@@ -347,6 +347,12 @@ h1 {
   outline-offset: 1px;
 }
 
+.field-block input::placeholder,
+.field-block textarea::placeholder {
+  color: var(--hint);
+  opacity: 1;
+}
+
 .field-block textarea {
   min-height: 72px;
   resize: vertical;

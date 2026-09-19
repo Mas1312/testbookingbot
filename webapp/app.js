@@ -197,7 +197,7 @@ async function loadServices() {
     const meta = service.type === "slot" ? `${service.duration_min} мин` : "В наличии";
     card.innerHTML = `
       <div>
-        <div class="title">${service.name}</div>
+        <div class="title">${escapeHtml(service.name)}</div>
         <div class="meta">${meta}</div>
       </div>
       <span class="price-tag">${service.price} ₽</span>
@@ -302,7 +302,7 @@ function showDetailsScreen() {
 
 function renderOrderSummary() {
   const s = state.selectedService;
-  let rows = `<div class="row"><span class="label">Позиция</span><span>${s.name}</span></div>`;
+  let rows = `<div class="row"><span class="label">Позиция</span><span>${escapeHtml(s.name)}</span></div>`;
   if (s.type === "slot") {
     const { top } = formatDateLabel(state.selectedDate);
     rows += `<div class="row"><span class="label">Дата</span><span>${top}</span></div>`;
@@ -345,7 +345,7 @@ async function submitBooking() {
       }),
     });
 
-    let rows = `<div class="row"><span class="label">Позиция</span><span>${result.service_name}</span></div>`;
+    let rows = `<div class="row"><span class="label">Позиция</span><span>${escapeHtml(result.service_name)}</span></div>`;
     if (result.date) {
       rows += `<div class="row"><span class="label">Дата</span><span>${result.date}</span></div>`;
       rows += `<div class="row"><span class="label">Время</span><span>${result.time}</span></div>`;
@@ -442,8 +442,8 @@ async function loadAdminOrders() {
     card.innerHTML = `
       <div class="order-top">
         <div>
-          <div class="order-title">${order.service_name}${qtyText}</div>
-          <div class="order-meta">${order.client_name || "Без имени"} · ${whenText}</div>
+          <div class="order-title">${escapeHtml(order.service_name)}${qtyText}</div>
+          <div class="order-meta">${escapeHtml(order.client_name) || "Без имени"} · ${whenText}</div>
           <div class="order-meta">${order.price * order.quantity} ₽</div>
         </div>
         <span class="status-badge status-${order.status}">${statusLabels[order.status] || order.status}</span>
@@ -495,7 +495,7 @@ async function loadAdminServices() {
     const meta = service.type === "slot" ? `${service.duration_min} мин · по расписанию` : "разовый заказ";
     card.innerHTML = `
       <div>
-        <div class="title">${service.name} — ${service.price} ₽</div>
+        <div class="title">${escapeHtml(service.name)} — ${service.price} ₽</div>
         <div class="badge-type">${meta}${service.is_active ? "" : " · скрыта"}</div>
       </div>
       <span>✎</span>
@@ -534,8 +534,8 @@ el("save-service-btn").addEventListener("click", async () => {
   const type = el("service-form-title").dataset.type || "slot";
   const duration = type === "slot" ? parseInt(el("service-duration").value || "0", 10) : 0;
 
-  if (!name || isNaN(price)) {
-    alert("Заполни название и цену");
+  if (!name || isNaN(price) || price < 0) {
+    alert("Заполни название и укажи цену не меньше нуля");
     return;
   }
   if (type === "slot" && (isNaN(duration) || duration <= 0)) {
