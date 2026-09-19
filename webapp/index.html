@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Запись онлайн</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="style.css?v=3" />
+  <link rel="stylesheet" href="style.css?v=4" />
 </head>
 <body>
   <header id="brand-bar">
@@ -28,6 +28,13 @@
         <h1 id="business-title">Выберите услугу</h1>
         <p class="screen-subtitle">Быстро, без звонков — в пару касаний</p>
         <div id="services-list" class="list"></div>
+      </section>
+
+      <section id="screen-masters" class="screen hidden">
+        <button class="back-btn" data-back="services">← Назад</button>
+        <h1>Выберите мастера</h1>
+        <div id="masters-list" class="list"></div>
+        <p id="no-masters-msg" class="hint hidden">Для этой услуги пока нет доступных мастеров.</p>
       </section>
 
       <section id="screen-dates" class="screen hidden">
@@ -78,6 +85,7 @@
       <div class="admin-tabs">
         <button id="admin-tab-orders" class="admin-tab active">Заявки</button>
         <button id="admin-tab-services" class="admin-tab">Позиции</button>
+        <button id="admin-tab-masters" class="admin-tab">Мастера</button>
         <button id="admin-tab-theme" class="admin-tab">Оформление</button>
         <button id="admin-tab-schedule" class="admin-tab">Расписание</button>
       </div>
@@ -133,6 +141,45 @@
 
         <button id="save-service-btn" class="primary-btn">Сохранить</button>
         <button id="delete-service-btn" class="danger-btn hidden">Удалить позицию</button>
+      </section>
+
+      <!-- Мастера: включение выбора + список -->
+      <section id="admin-screen-masters" class="screen hidden">
+        <label class="toggle-row">
+          <input type="checkbox" id="use-masters-toggle" />
+          <span>
+            <b>Клиент выбирает мастера</b>
+            <small>Если выключено — запись идёт без мастеров, на общий календарь. Включить можно, когда добавлен хотя бы один мастер.</small>
+          </span>
+        </label>
+        <button id="add-master-btn" class="add-btn">+ Добавить мастера</button>
+        <div id="admin-masters-list" class="list"></div>
+        <p id="no-masters-admin-msg" class="hint hidden">Мастеров пока нет. Добавьте первого — у каждого будет свой календарь записи.</p>
+      </section>
+
+      <!-- Форма мастера -->
+      <section id="admin-screen-master-form" class="screen hidden">
+        <button class="back-btn" data-back="admin-masters">← Назад</button>
+        <h1 id="master-form-title">Новый мастер</h1>
+
+        <div class="field-block">
+          <label>Имя</label>
+          <input id="master-name" type="text" maxlength="80" placeholder="Например: Анна" />
+        </div>
+
+        <div class="field-block">
+          <label>Какие услуги ведёт</label>
+          <div id="master-services-box" class="check-list"></div>
+          <p class="hint">Клиент увидит мастера только у отмеченных услуг. Новые услуги по расписанию, если отмечены все, достаются мастеру автоматически.</p>
+        </div>
+
+        <label class="toggle-row">
+          <input type="checkbox" id="master-active" checked />
+          <span><b>Принимает записи</b><small>Если снять — мастер скрыт от клиентов, но остаётся в истории.</small></span>
+        </label>
+
+        <button id="save-master-btn" class="primary-btn">Сохранить</button>
+        <button id="delete-master-btn" class="danger-btn hidden">Удалить мастера</button>
       </section>
 
       <!-- Оформление Mini App -->
@@ -255,6 +302,6 @@
 
   </div>
 
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

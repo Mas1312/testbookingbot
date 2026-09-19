@@ -39,6 +39,7 @@ async def no_cache_static(request, call_next):
 class BookingRequest(BaseModel):
     business_id: int
     service_id: int
+    master_id: int | None = None     # обязателен, если у бизнеса включён выбор мастера
     date: str | None = None
     time: str | None = None
     quantity: int = 1
@@ -77,6 +78,22 @@ class ThemeRequest(BaseModel):
     danger_color: str
     success_color: str
     radius: int = Field(ge=0, le=60)
+    init_data: str = ""
+    owner_tg_id: int | None = None
+
+
+class MasterRequest(BaseModel):
+    business_id: int
+    name: str = Field(min_length=1, max_length=80)
+    service_ids: list[int] = []      # пусто = мастер ведёт все позиции по расписанию
+    is_active: bool = True
+    init_data: str = ""
+    owner_tg_id: int | None = None
+
+
+class MastersSettingsRequest(BaseModel):
+    business_id: int
+    use_masters: bool
     init_data: str = ""
     owner_tg_id: int | None = None
 
@@ -120,6 +137,20 @@ def check_owner(business: dict, init_data: str, owner_tg_id_fallback: int | None
             raise HTTPException(status_code=403, detail="Не удалось подтвердить владельца")
     if verified_user_id != business["owner_tg_id"]:
         raise HTTPException(status_code=403, detail="Доступно только владельцу")
+
+
+def resolve_master(business: dict, service: dict, master_id: int | None):
+    """Мастер для записи на позицию по расписанию. None — если выбор мастера у бизнеса
+    выключен или позиция без расписания (разовый заказ); иначе мастер обязателен, должен
+    принадлежать этому бизнесу, быть активным и вести эту позицию."""
+    if not business["use_masters"] or service["type"] != "slot":
+        return None
+    if master_id is None:
+        raise HTTPException(status_code=400, detail="Выберите мастера")
+    master = database.get_master(business["id"], master_id)
+    if not master or not master["is_active"] or not database.master_does_service(master, service["id"]):
+        raise HTTPException(status_code=404, detail="Мастер недоступен для этой услуги")
+    return master
 
 
 # Бизнес по умолчанию — тот, что привязан к BOT_TOKEN из .env. Используется, когда
@@ -179,6 +210,7 @@ def api_config(business_id: int | None = None):
         "business_id": business["id"],
         "business_name": business["name"],
         "owner_tg_id": business["owner_tg_id"],
+        "use_masters": bool(business["use_masters"]),
         "theme": database.get_theme(business["id"]),
     }
 
@@ -195,13 +227,29 @@ def api_dates(business_id: int | None = None):
     return database.get_available_dates(business["id"])
 
 
+@app.get("/api/masters")
+def api_masters(service_id: int, business_id: int | None = None):
+    """Мастера, к которым можно записаться на позицию. Пусто — выбор мастера выключен."""
+    business = resolve_business(business_id)
+    if not business["use_masters"]:
+        return []
+    service = database.get_service(business["id"], service_id)
+    if not service:
+        raise HTTPException(status_code=404, detail="Позиция не найдена")
+    return [
+        {"id": m["id"], "name": m["name"]}
+        for m in database.get_masters_for_service(business["id"], service_id)
+    ]
+
+
 @app.get("/api/slots")
-def api_slots(service_id: int, date: str, business_id: int | None = None):
+def api_slots(service_id: int, date: str, business_id: int | None = None, master_id: int | None = None):
     business = resolve_business(business_id)
     service = database.get_service(business["id"], service_id)
     if not service:
         raise HTTPException(status_code=404, detail="Позиция не найдена")
-    return database.get_available_slots(business["id"], service_id, date)
+    master = resolve_master(business, service, master_id)
+    return database.get_available_slots(business["id"], service_id, date, master["id"] if master else None)
 
 
 @app.post("/api/book")
@@ -211,10 +259,14 @@ def api_book(booking: BookingRequest, background_tasks: BackgroundTasks):
     if not service:
         raise HTTPException(status_code=404, detail="Позиция не найдена")
 
+    master = resolve_master(business, service, booking.master_id)
+
     if service["type"] == "slot":
         if not booking.date or not booking.time:
             raise HTTPException(status_code=400, detail="Для этой позиции нужно выбрать дату и время")
-        free_slots = database.get_available_slots(business["id"], booking.service_id, booking.date)
+        free_slots = database.get_available_slots(
+            business["id"], booking.service_id, booking.date, master["id"] if master else None
+        )
         if booking.time not in free_slots:
             raise HTTPException(status_code=409, detail="Это время уже занято, выберите другое")
         date, time = booking.date, booking.time
@@ -232,12 +284,14 @@ def api_book(booking: BookingRequest, background_tasks: BackgroundTasks):
         business["id"], booking.service_id, service["name"], service["price"], date, time,
         booking.client_name, client_tg_id,
         quantity=max(1, booking.quantity), comment=booking.comment,
+        master_id=master["id"] if master else None, master_name=master["name"] if master else None,
     )
     background_tasks.add_task(notifications.notify_new_booking, business["id"], booking_id)
     return {
         "ok": True,
         "booking_id": booking_id,
         "service_name": service["name"],
+        "master_name": master["name"] if master else None,
         "price": service["price"],
         "quantity": max(1, booking.quantity),
         "date": date,
@@ -282,6 +336,82 @@ def admin_delete_service(service_id: int, business_id: int, init_data: str = "",
         raise HTTPException(status_code=404, detail="Позиция не найдена")
     database.delete_service(business["id"], service_id)
     return {"ok": True}
+
+
+@app.get("/api/admin/masters")
+def admin_list_masters(business_id: int, init_data: str = "", owner_tg_id: int | None = None):
+    business = resolve_business(business_id)
+    check_owner(business, init_data, owner_tg_id)
+    return {
+        "use_masters": bool(business["use_masters"]),
+        "masters": database.get_masters(business["id"], active_only=False),
+    }
+
+
+def _disable_masters_if_none_left(business: dict):
+    """Если у бизнеса включён выбор мастера, а активных мастеров не осталось (удалили или
+    скрыли последнего), клиент упёрся бы в пустой экран — выключаем выбор автоматически."""
+    if business["use_masters"] and not database.get_masters(business["id"]):
+        database.set_use_masters(business["id"], False)
+
+
+def _validated_service_ids(business_id: int, service_ids: list[int]) -> list[int]:
+    """Оставляем только позиции по расписанию этого бизнеса. Если владелец что-то выбрал,
+    а подходящих нет — это ошибка (иначе пустой список молча превратился бы в «все позиции»)."""
+    valid = {s["id"] for s in database.get_services(business_id, active_only=False) if s["type"] == "slot"}
+    result = [sid for sid in service_ids if sid in valid]
+    if service_ids and not result:
+        raise HTTPException(status_code=400, detail="Выбраны несуществующие позиции")
+    return result
+
+
+@app.post("/api/admin/masters")
+def admin_create_master(payload: MasterRequest):
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Укажите имя мастера")
+    service_ids = _validated_service_ids(business["id"], payload.service_ids)
+    new_id = database.create_master(business["id"], name, service_ids, payload.is_active)
+    return {"ok": True, "id": new_id}
+
+
+@app.put("/api/admin/masters/{master_id}")
+def admin_update_master(master_id: int, payload: MasterRequest):
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    if not database.get_master(business["id"], master_id):
+        raise HTTPException(status_code=404, detail="Мастер не найден")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Укажите имя мастера")
+    service_ids = _validated_service_ids(business["id"], payload.service_ids)
+    database.update_master(business["id"], master_id, name, service_ids, payload.is_active)
+    _disable_masters_if_none_left(business)
+    return {"ok": True}
+
+
+@app.delete("/api/admin/masters/{master_id}")
+def admin_delete_master(master_id: int, business_id: int, init_data: str = "", owner_tg_id: int | None = None):
+    business = resolve_business(business_id)
+    check_owner(business, init_data, owner_tg_id)
+    if not database.get_master(business["id"], master_id):
+        raise HTTPException(status_code=404, detail="Мастер не найден")
+    database.delete_master(business["id"], master_id)
+    _disable_masters_if_none_left(business)
+    return {"ok": True}
+
+
+@app.put("/api/admin/masters-settings")
+def admin_masters_settings(payload: MastersSettingsRequest):
+    """Включает/выключает шаг «выбор мастера» у клиентов."""
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    if payload.use_masters and not database.get_masters(business["id"]):
+        raise HTTPException(status_code=400, detail="Сначала добавьте хотя бы одного мастера")
+    database.set_use_masters(business["id"], payload.use_masters)
+    return {"ok": True, "use_masters": payload.use_masters}
 
 
 @app.get("/api/admin/bookings")

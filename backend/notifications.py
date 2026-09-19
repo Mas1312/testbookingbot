@@ -76,6 +76,8 @@ def owner_text(booking: dict) -> str:
         f"👤 {client}",
         f"💰 {booking['price'] * booking['quantity']} ₽",
     ]
+    if booking["master_name"]:
+        lines.insert(3, f"🧑‍🎨 Мастер: {_e(booking['master_name'])}")
     if booking["comment"]:
         lines.append(f"💬 {_e(booking['comment'])}")
     return "\n".join(lines)
@@ -97,6 +99,8 @@ def owner_keyboard(booking: dict) -> InlineKeyboardMarkup | None:
 
 def client_text(booking: dict, status: str) -> str:
     what = f"{_title(booking)}, {_when(booking)}"
+    if booking["master_name"]:
+        what += f" (мастер: {_e(booking['master_name'])})"
     if status == "new":
         return f"📨 Заявка отправлена: {what}.\nЖдём подтверждения — напишем сюда, как только ответят."
     if status == "confirmed":

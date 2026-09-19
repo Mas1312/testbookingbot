@@ -54,6 +54,8 @@ const state = {
   services: [],
   dates: [],
   selectedService: null,
+  masters: [],
+  selectedMaster: null,
   selectedDate: null,
   selectedTime: null,
   quantity: 1,
@@ -64,6 +66,8 @@ const state = {
     orders: [],
     statusFilter: "",
     editingServiceId: null,
+    masters: [],
+    editingMasterId: null,
   },
 };
 
@@ -71,6 +75,7 @@ const el = (id) => document.getElementById(id);
 
 const screens = {
   services: el("screen-services"),
+  masters: el("screen-masters"),
   dates: el("screen-dates"),
   slots: el("screen-slots"),
   details: el("screen-details"),
@@ -81,6 +86,8 @@ const adminScreens = {
   orders: el("admin-screen-orders"),
   services: el("admin-screen-services"),
   "service-form": el("admin-screen-service-form"),
+  masters: el("admin-screen-masters"),
+  "master-form": el("admin-screen-master-form"),
   theme: el("admin-screen-theme"),
   schedule: el("admin-screen-schedule"),
 };
@@ -210,15 +217,66 @@ async function loadServices() {
 
 function selectService(service) {
   state.selectedService = service;
+  state.selectedMaster = null;
   state.quantity = 1;
   state.comment = "";
   if (service.type === "slot") {
-    loadDates();
-    showScreen("dates");
+    if (state.config.use_masters) {
+      loadMasters();
+      showScreen("masters");
+    } else {
+      setDatesBackTarget("services");
+      loadDates();
+      showScreen("dates");
+    }
   } else {
     showDetailsScreen();
     showScreen("details");
   }
+}
+
+// Куда ведёт «Назад» на экране дат: к выбору мастера (если он включён) или к списку услуг.
+function setDatesBackTarget(target) {
+  document.querySelector("#screen-dates .back-btn").dataset.back = target;
+}
+
+async function loadMasters() {
+  const list = el("masters-list");
+  const noMastersMsg = el("no-masters-msg");
+  list.innerHTML = "";
+  noMastersMsg.classList.add("hidden");
+
+  try {
+    state.masters = await api(`/api/masters?${qs({
+      service_id: state.selectedService.id,
+      business_id: state.businessId,
+    })}`);
+  } catch (e) {
+    alert(e.message);
+    return;
+  }
+  if (state.masters.length === 0) {
+    noMastersMsg.classList.remove("hidden");
+    return;
+  }
+  state.masters.forEach((master) => {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <div class="title">${escapeHtml(master.name)}</div>
+      <span class="chev">›</span>
+    `;
+    card.addEventListener("click", () => selectMaster(master));
+    list.appendChild(card);
+  });
+}
+
+function selectMaster(master) {
+  state.selectedMaster = master;
+  state.selectedDate = null;
+  setDatesBackTarget("masters");
+  loadDates();
+  showScreen("dates");
 }
 
 async function loadDates() {
@@ -248,6 +306,7 @@ async function loadSlots() {
     service_id: state.selectedService.id,
     date: state.selectedDate,
     business_id: state.businessId,
+    master_id: state.selectedMaster ? state.selectedMaster.id : null,
   })}`);
   const list = el("slots-list");
   const noSlotsMsg = el("no-slots-msg");
@@ -304,6 +363,9 @@ function showDetailsScreen() {
 function renderOrderSummary() {
   const s = state.selectedService;
   let rows = `<div class="row"><span class="label">Позиция</span><span>${escapeHtml(s.name)}</span></div>`;
+  if (s.type === "slot" && state.selectedMaster) {
+    rows += `<div class="row"><span class="label">Мастер</span><span>${escapeHtml(state.selectedMaster.name)}</span></div>`;
+  }
   if (s.type === "slot") {
     const { top } = formatDateLabel(state.selectedDate);
     rows += `<div class="row"><span class="label">Дата</span><span>${top}</span></div>`;
@@ -337,6 +399,7 @@ async function submitBooking() {
       body: JSON.stringify({
         business_id: state.businessId,
         service_id: s.id,
+        master_id: s.type === "slot" && state.selectedMaster ? state.selectedMaster.id : null,
         date: s.type === "slot" ? state.selectedDate : null,
         time: s.type === "slot" ? state.selectedTime : null,
         quantity: state.quantity,
@@ -348,6 +411,9 @@ async function submitBooking() {
     });
 
     let rows = `<div class="row"><span class="label">Позиция</span><span>${escapeHtml(result.service_name)}</span></div>`;
+    if (result.master_name) {
+      rows += `<div class="row"><span class="label">Мастер</span><span>${escapeHtml(result.master_name)}</span></div>`;
+    }
     if (result.date) {
       rows += `<div class="row"><span class="label">Дата</span><span>${result.date}</span></div>`;
       rows += `<div class="row"><span class="label">Время</span><span>${result.time}</span></div>`;
@@ -371,7 +437,14 @@ async function submitBooking() {
 
 // Кнопки "назад" со статичной целью (data-back="...")
 document.querySelectorAll("[data-back]").forEach((btn) => {
-  btn.addEventListener("click", () => showScreen(btn.dataset.back));
+  btn.addEventListener("click", () => {
+    const target = btn.dataset.back;
+    if (target.startsWith("admin-")) {
+      showAdminScreen(target.slice("admin-".length));
+    } else {
+      showScreen(target);
+    }
+  });
 });
 
 // ======================================================================
@@ -392,6 +465,13 @@ el("admin-tab-services").addEventListener("click", () => {
   loadAdminServices();
 });
 
+el("admin-tab-masters").addEventListener("click", () => {
+  applyTheme(state.config.theme); // сбрасываем несохранённое превью оформления, если было
+  setActiveAdminTab("admin-tab-masters");
+  showAdminScreen("masters");
+  loadAdminMasters();
+});
+
 el("admin-tab-theme").addEventListener("click", () => {
   setActiveAdminTab("admin-tab-theme");
   showAdminScreen("theme");
@@ -406,7 +486,7 @@ el("admin-tab-schedule").addEventListener("click", () => {
 });
 
 function setActiveAdminTab(activeId) {
-  ["admin-tab-orders", "admin-tab-services", "admin-tab-theme", "admin-tab-schedule"].forEach((id) => {
+  ["admin-tab-orders", "admin-tab-services", "admin-tab-masters", "admin-tab-theme", "admin-tab-schedule"].forEach((id) => {
     el(id).classList.toggle("active", id === activeId);
   });
 }
@@ -453,6 +533,7 @@ async function loadAdminOrders() {
         <div>
           <div class="order-title">${escapeHtml(order.service_name)}${qtyText}</div>
           <div class="order-meta">${escapeHtml(order.client_name) || "Без имени"} · ${whenText}</div>
+          ${order.master_name ? `<div class="order-meta">Мастер: ${escapeHtml(order.master_name)}</div>` : ""}
           <div class="order-meta">${order.price * order.quantity} ₽</div>
         </div>
         <span class="status-badge status-${order.status}">${statusLabels[order.status] || order.status}</span>
@@ -589,6 +670,116 @@ el("delete-service-btn").addEventListener("click", async () => {
   });
   showAdminScreen("services");
   loadAdminServices();
+});
+
+// ======================================================================
+// АДМИН-РЕЖИМ: мастера
+// ======================================================================
+
+const adminAuth = () => ({ init_data: state.initData, owner_tg_id: state.myTgId, business_id: state.businessId });
+
+async function loadAdminMasters() {
+  const data = await api(`/api/admin/masters?${qs(adminAuth())}`);
+  state.admin.masters = data.masters;
+  state.config.use_masters = data.use_masters;
+  el("use-masters-toggle").checked = data.use_masters;
+
+  const list = el("admin-masters-list");
+  list.innerHTML = "";
+  el("no-masters-admin-msg").classList.toggle("hidden", data.masters.length > 0);
+
+  data.masters.forEach((master) => {
+    const card = document.createElement("div");
+    card.className = "service-admin-card" + (master.is_active ? "" : " inactive");
+    const scope = master.service_ids.length ? `услуг: ${master.service_ids.length}` : "все услуги";
+    card.innerHTML = `
+      <div>
+        <div class="title">${escapeHtml(master.name)}</div>
+        <div class="badge-type">${scope}${master.is_active ? "" : " · скрыт"}</div>
+      </div>
+      <span>✎</span>
+    `;
+    card.addEventListener("click", () => openMasterForm(master));
+    list.appendChild(card);
+  });
+}
+
+el("use-masters-toggle").addEventListener("change", async (e) => {
+  const enabled = e.target.checked;
+  try {
+    await api("/api/admin/masters-settings", {
+      method: "PUT",
+      body: JSON.stringify({ ...adminAuth(), use_masters: enabled }),
+    });
+    state.config.use_masters = enabled;
+  } catch (err) {
+    e.target.checked = !enabled;
+    alert(err.message);
+  }
+});
+
+el("add-master-btn").addEventListener("click", () => openMasterForm(null));
+
+async function openMasterForm(master) {
+  state.admin.editingMasterId = master ? master.id : null;
+  el("master-form-title").textContent = master ? "Редактировать мастера" : "Новый мастер";
+  el("master-name").value = master ? master.name : "";
+  el("master-active").checked = master ? !!master.is_active : true;
+  el("delete-master-btn").classList.toggle("hidden", !master);
+
+  const services = (await api(`/api/admin/services?${qs(adminAuth())}`)).filter((s) => s.type === "slot");
+  const box = el("master-services-box");
+  box.innerHTML = "";
+  if (services.length === 0) {
+    box.innerHTML = `<p class="hint">Пока нет позиций по расписанию — мастер будет вести все, что появятся.</p>`;
+  }
+  services.forEach((service) => {
+    const label = document.createElement("label");
+    // пустой список у мастера = ведёт все услуги
+    const checked = !master || master.service_ids.length === 0 || master.service_ids.includes(service.id);
+    label.innerHTML = `<input type="checkbox" value="${service.id}" ${checked ? "checked" : ""} /> <span>${escapeHtml(service.name)}</span>`;
+    box.appendChild(label);
+  });
+  showAdminScreen("master-form");
+}
+
+el("save-master-btn").addEventListener("click", async () => {
+  const name = el("master-name").value.trim();
+  if (!name) {
+    alert("Укажите имя мастера");
+    return;
+  }
+  const boxes = [...el("master-services-box").querySelectorAll("input[type=checkbox]")];
+  const serviceIds = boxes.filter((b) => b.checked).map((b) => Number(b.value));
+  if (boxes.length > 0 && serviceIds.length === 0) {
+    alert("Отметьте хотя бы одну услугу");
+    return;
+  }
+
+  const payload = { ...adminAuth(), name, service_ids: serviceIds, is_active: el("master-active").checked };
+  try {
+    if (state.admin.editingMasterId) {
+      await api(`/api/admin/masters/${state.admin.editingMasterId}`, { method: "PUT", body: JSON.stringify(payload) });
+    } else {
+      await api("/api/admin/masters", { method: "POST", body: JSON.stringify(payload) });
+    }
+    showAdminScreen("masters");
+    loadAdminMasters();
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+el("delete-master-btn").addEventListener("click", async () => {
+  if (!state.admin.editingMasterId) return;
+  if (!confirm("Удалить мастера? Уже созданные записи к нему останутся в истории.")) return;
+  try {
+    await api(`/api/admin/masters/${state.admin.editingMasterId}?${qs(adminAuth())}`, { method: "DELETE" });
+    showAdminScreen("masters");
+    loadAdminMasters();
+  } catch (e) {
+    alert(e.message);
+  }
 });
 
 // ======================================================================

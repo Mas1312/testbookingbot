@@ -59,6 +59,8 @@ def init_db():
         "work_end_hour": "INTEGER NOT NULL DEFAULT 18",
         "slot_step_minutes": "INTEGER NOT NULL DEFAULT 30",
         "days_ahead": "INTEGER NOT NULL DEFAULT 7",
+        # Включает шаг «выбор мастера» для клиентов (см. таблицу masters).
+        "use_masters": "INTEGER NOT NULL DEFAULT 0",
     })
 
     cur.execute("""
@@ -72,6 +74,27 @@ def init_db():
             is_active INTEGER NOT NULL DEFAULT 1,
             sort_order INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (business_id) REFERENCES businesses (id)
+        )
+    """)
+
+    # Мастера (сотрудники/исполнители). У каждого свой календарь: занятость слотов
+    # считается по master_id заявки. master_services — какие позиции мастер ведёт;
+    # НЕТ строк = ведёт все позиции по расписанию (так новая позиция сразу доступна всем).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS masters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (business_id) REFERENCES businesses (id)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS master_services (
+            master_id INTEGER NOT NULL,
+            service_id INTEGER NOT NULL,
+            PRIMARY KEY (master_id, service_id)
         )
     """)
 
@@ -97,6 +120,10 @@ def init_db():
         # цены или удаление позиции не переписывали историю задним числом.
         "service_name": "TEXT",
         "price": "INTEGER",
+        # Мастер, к которому записали (NULL — записи без мастеров / сделанные до их появления).
+        # Имя — снимок на момент брони, как и у услуги.
+        "master_id": "INTEGER",
+        "master_name": "TEXT",
     })
 
     conn.commit()
@@ -300,6 +327,101 @@ def delete_service(business_id: int, service_id: int):
     conn.close()
 
 
+# ---------- Мастера ----------
+
+def _attach_service_ids(conn, masters: list[dict]) -> list[dict]:
+    for m in masters:
+        rows = conn.execute("SELECT service_id FROM master_services WHERE master_id = ?", (m["id"],)).fetchall()
+        m["service_ids"] = sorted(r["service_id"] for r in rows)  # пусто = все позиции
+    return masters
+
+
+def get_masters(business_id: int, active_only: bool = True):
+    conn = get_connection()
+    query = "SELECT * FROM masters WHERE business_id = ?"
+    if active_only:
+        query += " AND is_active = 1"
+    query += " ORDER BY sort_order, id"
+    masters = _attach_service_ids(conn, [dict(r) for r in conn.execute(query, (business_id,)).fetchall()])
+    conn.close()
+    return masters
+
+
+def get_master(business_id: int, master_id: int):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM masters WHERE id = ? AND business_id = ?", (master_id, business_id)).fetchone()
+    result = _attach_service_ids(conn, [dict(row)])[0] if row else None
+    conn.close()
+    return result
+
+
+def master_does_service(master: dict, service_id: int) -> bool:
+    return not master["service_ids"] or service_id in master["service_ids"]
+
+
+def get_masters_for_service(business_id: int, service_id: int):
+    """Активные мастера, которые ведут эту позицию — для шага «выбор мастера» у клиента."""
+    return [m for m in get_masters(business_id) if master_does_service(m, service_id)]
+
+
+def _save_master_services(conn, business_id: int, master_id: int, service_ids: list[int]):
+    """Пишет ограничение по позициям. Если выбраны ВСЕ позиции по расписанию — строки не
+    храним (пусто = все), чтобы будущие позиции доставались мастеру автоматически."""
+    slot_ids = {r["id"] for r in conn.execute(
+        "SELECT id FROM services WHERE business_id = ? AND type = 'slot'", (business_id,)
+    ).fetchall()}
+    chosen = set(service_ids) & slot_ids
+    conn.execute("DELETE FROM master_services WHERE master_id = ?", (master_id,))
+    if chosen and chosen != slot_ids:
+        conn.executemany(
+            "INSERT INTO master_services (master_id, service_id) VALUES (?, ?)",
+            [(master_id, sid) for sid in chosen],
+        )
+
+
+def create_master(business_id: int, name: str, service_ids: list[int], is_active: bool = True):
+    conn = get_connection()
+    next_order = conn.execute(
+        "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM masters WHERE business_id = ?", (business_id,)
+    ).fetchone()[0]
+    cur = conn.execute(
+        "INSERT INTO masters (business_id, name, is_active, sort_order) VALUES (?, ?, ?, ?)",
+        (business_id, name, 1 if is_active else 0, next_order),
+    )
+    master_id = cur.lastrowid
+    _save_master_services(conn, business_id, master_id, service_ids)
+    conn.commit()
+    conn.close()
+    return master_id
+
+
+def update_master(business_id: int, master_id: int, name: str, service_ids: list[int], is_active: bool):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE masters SET name = ?, is_active = ? WHERE id = ? AND business_id = ?",
+        (name, 1 if is_active else 0, master_id, business_id),
+    )
+    _save_master_services(conn, business_id, master_id, service_ids)
+    conn.commit()
+    conn.close()
+
+
+def delete_master(business_id: int, master_id: int):
+    """Прошлые и будущие заявки остаются (имя мастера хранится в самой заявке)."""
+    conn = get_connection()
+    conn.execute("DELETE FROM master_services WHERE master_id = ?", (master_id,))
+    conn.execute("DELETE FROM masters WHERE id = ? AND business_id = ?", (master_id, business_id))
+    conn.commit()
+    conn.close()
+
+
+def set_use_masters(business_id: int, enabled: bool):
+    conn = get_connection()
+    conn.execute("UPDATE businesses SET use_masters = ? WHERE id = ?", (1 if enabled else 0, business_id))
+    conn.commit()
+    conn.close()
+
+
 # ---------- Слоты (только для позиций type='slot') ----------
 
 def _now_in_business_tz(timezone: str) -> datetime:
@@ -328,10 +450,14 @@ def _slot_overlaps_busy(slot_start_minutes, slot_duration, busy_ranges):
     return False
 
 
-def get_available_slots(business_id: int, service_id: int, date: str):
+def get_available_slots(business_id: int, service_id: int, date: str, master_id: int | None = None):
     """Возвращает список свободных времён (HH:MM) для позиции на дату, с учётом её
     длительности, уже существующих записей и расписания бизнеса (рабочие часы, шаг
-    сетки — свои у каждого бизнеса) — время «сейчас» берётся в часовом поясе бизнеса."""
+    сетки — свои у каждого бизнеса) — время «сейчас» берётся в часовом поясе бизнеса.
+
+    master_id — календарь конкретного мастера: заняты только его записи (и старые записи
+    без мастера — они не привязаны ни к кому, поэтому блокируют всех). Без master_id
+    (бизнес без мастеров) календарь общий."""
     service = get_service(business_id, service_id)
     if not service or service["type"] != "slot":
         return []
@@ -339,15 +465,17 @@ def get_available_slots(business_id: int, service_id: int, date: str):
     schedule = get_schedule(business_id)
 
     conn = get_connection()
-    busy_rows = conn.execute(
-        """
+    busy_query = """
         SELECT b.time, s.duration_min
         FROM bookings b
         JOIN services s ON s.id = b.service_id
         WHERE b.business_id = ? AND b.date = ? AND b.status != 'cancelled' AND s.type = 'slot'
-        """,
-        (business_id, date),
-    ).fetchall()
+    """
+    busy_params = [business_id, date]
+    if master_id is not None:
+        busy_query += " AND (b.master_id = ? OR b.master_id IS NULL)"
+        busy_params.append(master_id)
+    busy_rows = conn.execute(busy_query, busy_params).fetchall()
     conn.close()
 
     busy_ranges = []
@@ -376,16 +504,19 @@ def get_available_slots(business_id: int, service_id: int, date: str):
 
 # ---------- Заявки (bookings) ----------
 
-def create_booking(business_id, service_id, service_name, price, date, time, client_name, client_tg_id, quantity=1, comment=None):
+def create_booking(business_id, service_id, service_name, price, date, time, client_name, client_tg_id, quantity=1, comment=None,
+                   master_id=None, master_name=None):
     """service_name/price — снимок с позиции НА МОМЕНТ брони: последующее изменение
     цены или удаление позиции больше не переписывает историю заявок задним числом."""
     conn = get_connection()
     cur = conn.execute(
         """
-        INSERT INTO bookings (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO bookings (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment,
+                              master_id, master_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment),
+        (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment,
+         master_id, master_name),
     )
     conn.commit()
     booking_id = cur.lastrowid
@@ -399,7 +530,7 @@ def create_booking(business_id, service_id, service_name, price, date, time, cli
 # join к services переключаемся только для старых записей, сделанных до этой правки.
 _BOOKING_SELECT = """
     SELECT b.id, b.date, b.time, b.client_name, b.client_tg_id, b.quantity,
-           b.comment, b.status, b.created_at,
+           b.comment, b.status, b.created_at, b.master_id, b.master_name,
            COALESCE(b.service_name, s.name, 'Позиция удалена') as service_name,
            COALESCE(b.price, s.price, 0) as price,
            s.type as service_type
