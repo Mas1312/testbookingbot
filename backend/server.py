@@ -1,5 +1,6 @@
 import asyncio
 import os
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -74,6 +75,17 @@ class ThemeRequest(BaseModel):
     danger_color: str
     success_color: str
     radius: int = Field(ge=0, le=60)
+    init_data: str = ""
+    owner_tg_id: int | None = None
+
+
+class ScheduleRequest(BaseModel):
+    business_id: int
+    timezone: str
+    work_start_hour: int = Field(ge=0, le=23)
+    work_end_hour: int = Field(ge=1, le=24)
+    slot_step_minutes: int = Field(ge=5, le=240)
+    days_ahead: int = Field(ge=1, le=60)
     init_data: str = ""
     owner_tg_id: int | None = None
 
@@ -176,8 +188,9 @@ def api_services(business_id: int | None = None):
 
 
 @app.get("/api/dates")
-def api_dates():
-    return database.get_available_dates()
+def api_dates(business_id: int | None = None):
+    business = resolve_business(business_id)
+    return database.get_available_dates(business["id"])
 
 
 @app.get("/api/slots")
@@ -208,7 +221,8 @@ def api_book(booking: BookingRequest):
         date, time = None, None
 
     booking_id = database.create_booking(
-        business["id"], booking.service_id, date, time, booking.client_name, booking.client_tg_id,
+        business["id"], booking.service_id, service["name"], service["price"], date, time,
+        booking.client_name, booking.client_tg_id,
         quantity=max(1, booking.quantity), comment=booking.comment,
     )
     return {
@@ -284,6 +298,29 @@ def admin_update_theme(payload: ThemeRequest):
     check_owner(business, payload.init_data, payload.owner_tg_id)
     database.update_theme(business["id"], payload.model_dump(exclude={"owner_tg_id", "business_id", "init_data"}))
     return {"ok": True, "theme": database.get_theme(business["id"])}
+
+
+@app.get("/api/admin/schedule")
+def admin_get_schedule(business_id: int, init_data: str = "", owner_tg_id: int | None = None):
+    business = resolve_business(business_id)
+    check_owner(business, init_data, owner_tg_id)
+    return database.get_schedule(business["id"])
+
+
+@app.put("/api/admin/schedule")
+def admin_update_schedule(payload: ScheduleRequest):
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+
+    if payload.work_end_hour <= payload.work_start_hour:
+        raise HTTPException(status_code=400, detail="Время закрытия должно быть позже времени открытия")
+    try:
+        ZoneInfo(payload.timezone)
+    except ZoneInfoNotFoundError:
+        raise HTTPException(status_code=400, detail="Неизвестный часовой пояс")
+
+    database.update_schedule(business["id"], payload.model_dump(exclude={"owner_tg_id", "business_id", "init_data"}))
+    return {"ok": True, "schedule": database.get_schedule(business["id"])}
 
 
 # Отдаём саму Mini App (index.html, style.css, app.js) как статику.

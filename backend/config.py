@@ -41,17 +41,23 @@ USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"
 # зная только твой Telegram ID (он не секретный).
 DEV_SKIP_INITDATA_CHECK = os.getenv("DEV_SKIP_INITDATA_CHECK", "false").lower() == "true"
 
-# --- Настройки рабочего времени бизнеса (пока захардкожены для прототипа) ---
-WORK_START_HOUR = 9      # во сколько открываемся
-WORK_END_HOUR = 18       # во сколько закрываемся
-SLOT_STEP_MINUTES = 30   # шаг сетки слотов (можно ставить запись каждые 30 минут)
-DAYS_AHEAD = 7           # на сколько дней вперёд можно записаться
-
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "booking.db")
 
-# Оформление Mini App по умолчанию (пока одно на бизнес, хранится в БД в таблице
-# theme_settings — владелец может поменять его в разделе «Оформление» админки).
-# Когда прототип превратится в SaaS, эта же схема просто переедет в строку на business_id.
+# Расписание по умолчанию для НОВОГО бизнеса (при создании через create_business) —
+# дальше у каждого бизнеса своё, хранится в БД в его строке в businesses и меняется
+# в разделе «Расписание» админки. Часовой пояс — своё, самое важное: раньше слоты
+# считались по времени СЕРВЕРА (на Render это UTC), что для бизнеса в Москве сдвигало
+# доступные часы на 3 часа.
+DEFAULT_SCHEDULE = {
+    "timezone": "Europe/Moscow",
+    "work_start_hour": 9,
+    "work_end_hour": 18,
+    "slot_step_minutes": 30,
+    "days_ahead": 7,
+}
+
+# Оформление Mini App по умолчанию для нового бизнеса — та же история, что и с
+# расписанием: дальше своё у каждого, хранится в его строке в businesses.
 DEFAULT_THEME = {
     "bg_color": "#FAFAFA",
     "surface_color": "#FFFFFF",

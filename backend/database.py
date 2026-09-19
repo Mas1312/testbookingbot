@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import datetime, timedelta
-from config import DB_PATH, WORK_START_HOUR, WORK_END_HOUR, SLOT_STEP_MINUTES, DAYS_AHEAD, DEFAULT_THEME
+from zoneinfo import ZoneInfo
+from config import DB_PATH, DEFAULT_THEME, DEFAULT_SCHEDULE
 
 
 def get_connection():
@@ -9,8 +10,18 @@ def get_connection():
     return conn
 
 
+def _ensure_columns(conn, table: str, columns: dict):
+    """Добавляет недостающие колонки в уже существующую таблицу (ALTER TABLE ADD COLUMN).
+    Нужно, чтобы у БД, развёрнутой ещё до появления расписания/заморозки цены в заявках,
+    не отвалился старт — CREATE TABLE IF NOT EXISTS новые колонки в старую таблицу не добавит."""
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, ddl_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl_type}")
+
+
 def init_db():
-    """Создаёт таблицы, если их ещё нет.
+    """Создаёт таблицы, если их ещё нет, и докатывает недостающие колонки на старых базах.
 
     Схема мультитенантная: одна база обслуживает несколько бизнесов (у каждого свой
     Telegram-бот и свой владелец), всё завязано на businesses.id.
@@ -42,6 +53,13 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    _ensure_columns(conn, "businesses", {
+        "timezone": "TEXT NOT NULL DEFAULT 'Europe/Moscow'",
+        "work_start_hour": "INTEGER NOT NULL DEFAULT 9",
+        "work_end_hour": "INTEGER NOT NULL DEFAULT 18",
+        "slot_step_minutes": "INTEGER NOT NULL DEFAULT 30",
+        "days_ahead": "INTEGER NOT NULL DEFAULT 7",
+    })
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS services (
@@ -74,6 +92,12 @@ def init_db():
             FOREIGN KEY (service_id) REFERENCES services (id)
         )
     """)
+    _ensure_columns(conn, "bookings", {
+        # Снимок названия/цены позиции на момент брони — чтобы более поздние правки
+        # цены или удаление позиции не переписывали историю задним числом.
+        "service_name": "TEXT",
+        "price": "INTEGER",
+    })
 
     conn.commit()
     conn.close()
@@ -96,16 +120,17 @@ def _seed_demo_services(conn, business_id: int):
 
 
 def create_business(owner_tg_id: int, name: str, bot_token: str):
-    """Заводит новый бизнес (свой Telegram-бот, свой владелец) с демо-позициями
-    и темой по умолчанию. Пока вызывается вручную/скриптом — полноценный
-    онбординг через диалог с ботом будет отдельным этапом."""
+    """Заводит новый бизнес (свой Telegram-бот, свой владелец) с демо-позициями,
+    темой и расписанием по умолчанию. Пока вызывается вручную/скриптом или через
+    /newbusiness — полноценная форма настройки расписания будет в админке после."""
     conn = get_connection()
     cur = conn.execute(
         """
         INSERT INTO businesses
             (owner_tg_id, name, bot_token, bg_color, surface_color, text_color, hint_color,
-             primary_color, primary_text_color, danger_color, success_color, radius)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             primary_color, primary_text_color, danger_color, success_color, radius,
+             timezone, work_start_hour, work_end_hour, slot_step_minutes, days_ahead)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             owner_tg_id, name, bot_token,
@@ -114,6 +139,9 @@ def create_business(owner_tg_id: int, name: str, bot_token: str):
             DEFAULT_THEME["primary_color"], DEFAULT_THEME["primary_text_color"],
             DEFAULT_THEME["danger_color"], DEFAULT_THEME["success_color"],
             DEFAULT_THEME["radius"],
+            DEFAULT_SCHEDULE["timezone"], DEFAULT_SCHEDULE["work_start_hour"],
+            DEFAULT_SCHEDULE["work_end_hour"], DEFAULT_SCHEDULE["slot_step_minutes"],
+            DEFAULT_SCHEDULE["days_ahead"],
         ),
     )
     business_id = cur.lastrowid
@@ -188,6 +216,31 @@ def update_theme(business_id: int, theme: dict):
     conn.close()
 
 
+SCHEDULE_FIELDS = ("timezone", "work_start_hour", "work_end_hour", "slot_step_minutes", "days_ahead")
+
+
+def get_schedule(business_id: int):
+    business = get_business(business_id)
+    return {k: business[k] for k in SCHEDULE_FIELDS} if business else dict(DEFAULT_SCHEDULE)
+
+
+def update_schedule(business_id: int, schedule: dict):
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE businesses
+        SET timezone = ?, work_start_hour = ?, work_end_hour = ?, slot_step_minutes = ?, days_ahead = ?
+        WHERE id = ?
+        """,
+        (
+            schedule["timezone"], schedule["work_start_hour"], schedule["work_end_hour"],
+            schedule["slot_step_minutes"], schedule["days_ahead"], business_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
 # ---------- Позиции (услуги/товары) ----------
 
 def get_services(business_id: int, active_only: bool = True):
@@ -249,10 +302,21 @@ def delete_service(business_id: int, service_id: int):
 
 # ---------- Слоты (только для позиций type='slot') ----------
 
-def get_available_dates():
-    """Список дат на DAYS_AHEAD вперёд начиная с сегодня, для выбора в Mini App."""
-    today = datetime.now().date()
-    return [(today + timedelta(days=i)).isoformat() for i in range(DAYS_AHEAD)]
+def _now_in_business_tz(timezone: str) -> datetime:
+    try:
+        return datetime.now(ZoneInfo(timezone))
+    except Exception:
+        # Битая/неизвестная таймзона в БД — не роняем расчёт слотов, просто откатываемся к UTC.
+        return datetime.now(ZoneInfo("UTC"))
+
+
+def get_available_dates(business_id: int):
+    """Список дат на days_ahead бизнеса вперёд, начиная с сегодняшнего дня В ЕГО
+    часовом поясе (а не часовом поясе сервера — на Render это UTC, что для
+    Europe/Moscow, например, может давать неверную дату ближе к полуночи)."""
+    schedule = get_schedule(business_id)
+    today = _now_in_business_tz(schedule["timezone"]).date()
+    return [(today + timedelta(days=i)).isoformat() for i in range(schedule["days_ahead"])]
 
 
 def _slot_overlaps_busy(slot_start_minutes, slot_duration, busy_ranges):
@@ -265,12 +329,14 @@ def _slot_overlaps_busy(slot_start_minutes, slot_duration, busy_ranges):
 
 
 def get_available_slots(business_id: int, service_id: int, date: str):
-    """Возвращает список свободных времён (HH:MM) для позиции на дату,
-    с учётом её длительности и уже существующих записей в этот день."""
+    """Возвращает список свободных времён (HH:MM) для позиции на дату, с учётом её
+    длительности, уже существующих записей и расписания бизнеса (рабочие часы, шаг
+    сетки — свои у каждого бизнеса) — время «сейчас» берётся в часовом поясе бизнеса."""
     service = get_service(business_id, service_id)
     if not service or service["type"] != "slot":
         return []
     duration = service["duration_min"]
+    schedule = get_schedule(business_id)
 
     conn = get_connection()
     busy_rows = conn.execute(
@@ -290,10 +356,11 @@ def get_available_slots(business_id: int, service_id: int, date: str):
         busy_ranges.append((h * 60 + m, row["duration_min"]))
 
     slots = []
-    start_minutes = WORK_START_HOUR * 60
-    end_minutes = WORK_END_HOUR * 60
+    start_minutes = schedule["work_start_hour"] * 60
+    end_minutes = schedule["work_end_hour"] * 60
+    slot_step = schedule["slot_step_minutes"]
 
-    now = datetime.now()
+    now = _now_in_business_tz(schedule["timezone"])
     is_today = date == now.date().isoformat()
     now_minutes = now.hour * 60 + now.minute
 
@@ -302,21 +369,23 @@ def get_available_slots(business_id: int, service_id: int, date: str):
         if not (is_today and t <= now_minutes):
             if not _slot_overlaps_busy(t, duration, busy_ranges):
                 slots.append(f"{t // 60:02d}:{t % 60:02d}")
-        t += SLOT_STEP_MINUTES
+        t += slot_step
 
     return slots
 
 
 # ---------- Заявки (bookings) ----------
 
-def create_booking(business_id, service_id, date, time, client_name, client_tg_id, quantity=1, comment=None):
+def create_booking(business_id, service_id, service_name, price, date, time, client_name, client_tg_id, quantity=1, comment=None):
+    """service_name/price — снимок с позиции НА МОМЕНТ брони: последующее изменение
+    цены или удаление позиции больше не переписывает историю заявок задним числом."""
     conn = get_connection()
     cur = conn.execute(
         """
-        INSERT INTO bookings (business_id, service_id, client_name, client_tg_id, date, time, quantity, comment)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO bookings (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (business_id, service_id, client_name, client_tg_id, date, time, quantity, comment),
+        (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment),
     )
     conn.commit()
     booking_id = cur.lastrowid
@@ -326,14 +395,15 @@ def create_booking(business_id, service_id, date, time, client_name, client_tg_i
 
 def get_all_bookings(business_id: int, status: str = None):
     # LEFT JOIN, а не JOIN: если позицию потом удалили, её прошлые заявки не должны
-    # молча пропадать из истории — раньше именно так и происходило (INNER JOIN просто
-    # выбрасывал такие строки).
+    # молча пропадать из истории (раньше INNER JOIN именно так и делал). Название/цену
+    # берём из самой заявки (заморожены на момент брони, см. create_booking), а на
+    # join к services переключаемся только для старых записей, сделанных до этой правки.
     conn = get_connection()
     query = """
         SELECT b.id, b.date, b.time, b.client_name, b.client_tg_id, b.quantity,
                b.comment, b.status, b.created_at,
-               COALESCE(s.name, 'Позиция удалена') as service_name,
-               COALESCE(s.price, 0) as price,
+               COALESCE(b.service_name, s.name, 'Позиция удалена') as service_name,
+               COALESCE(b.price, s.price, 0) as price,
                s.type as service_type
         FROM bookings b LEFT JOIN services s ON s.id = b.service_id
         WHERE b.business_id = ?

@@ -79,6 +79,7 @@
         <button id="admin-tab-orders" class="admin-tab active">Заявки</button>
         <button id="admin-tab-services" class="admin-tab">Позиции</button>
         <button id="admin-tab-theme" class="admin-tab">Оформление</button>
+        <button id="admin-tab-schedule" class="admin-tab">Расписание</button>
       </div>
 
       <!-- Список заявок -->
@@ -190,6 +191,63 @@
 
         <button id="save-theme-btn" class="primary-btn">Сохранить оформление</button>
         <button id="reset-theme-btn" class="add-btn">Сбросить к цветам по умолчанию</button>
+      </section>
+
+      <!-- Расписание работы -->
+      <section id="admin-screen-schedule" class="screen hidden">
+        <h1>Расписание</h1>
+        <p class="hint theme-intro">Свои рабочие часы и часовой пояс для твоего бизнеса — слоты клиентам считаются по ним.</p>
+
+        <div class="field-block">
+          <label>Часовой пояс</label>
+          <select id="schedule-timezone">
+            <option value="Europe/Kaliningrad">Калининград (UTC+2)</option>
+            <option value="Europe/Moscow">Москва (UTC+3)</option>
+            <option value="Europe/Samara">Самара (UTC+4)</option>
+            <option value="Asia/Yekaterinburg">Екатеринбург (UTC+5)</option>
+            <option value="Asia/Omsk">Омск (UTC+6)</option>
+            <option value="Asia/Krasnoyarsk">Красноярск (UTC+7)</option>
+            <option value="Asia/Irkutsk">Иркутск (UTC+8)</option>
+            <option value="Asia/Yakutsk">Якутск (UTC+9)</option>
+            <option value="Asia/Vladivostok">Владивосток (UTC+10)</option>
+            <option value="Asia/Magadan">Магадан (UTC+11)</option>
+            <option value="Asia/Kamchatka">Камчатка (UTC+12)</option>
+            <option value="Europe/Kyiv">Киев (UTC+2/+3)</option>
+            <option value="Europe/Minsk">Минск (UTC+3)</option>
+            <option value="Asia/Almaty">Алматы (UTC+6)</option>
+            <option value="Asia/Tashkent">Ташкент (UTC+5)</option>
+            <option value="UTC">UTC</option>
+          </select>
+        </div>
+
+        <div class="theme-field-grid">
+          <div class="field-block">
+            <label>Открываемся, час</label>
+            <input id="schedule-start" type="number" inputmode="numeric" min="0" max="23" placeholder="9" />
+          </div>
+          <div class="field-block">
+            <label>Закрываемся, час</label>
+            <input id="schedule-end" type="number" inputmode="numeric" min="1" max="24" placeholder="18" />
+          </div>
+        </div>
+
+        <div class="field-block">
+          <label>Шаг сетки времени</label>
+          <select id="schedule-step">
+            <option value="15">15 минут</option>
+            <option value="20">20 минут</option>
+            <option value="30">30 минут</option>
+            <option value="45">45 минут</option>
+            <option value="60">60 минут</option>
+          </select>
+        </div>
+
+        <div class="field-block">
+          <label>На сколько дней вперёд открыта запись</label>
+          <input id="schedule-days" type="number" inputmode="numeric" min="1" max="60" placeholder="7" />
+        </div>
+
+        <button id="save-schedule-btn" class="primary-btn">Сохранить расписание</button>
       </section>
 
     </div>

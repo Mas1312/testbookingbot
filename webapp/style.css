@@ -330,7 +330,8 @@ h1 {
 
 .field-block input[type="text"],
 .field-block input[type="number"],
-.field-block textarea {
+.field-block textarea,
+.field-block select {
   width: 100%;
   padding: 13px 14px;
   border-radius: var(--radius-sm);
@@ -341,8 +342,18 @@ h1 {
   font-family: inherit;
 }
 
+.field-block select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%23767676'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.25a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z' clip-rule='evenodd'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 18px;
+  padding-right: 40px;
+}
+
 .field-block input:focus,
-.field-block textarea:focus {
+.field-block textarea:focus,
+.field-block select:focus {
   outline: 2px solid color-mix(in srgb, var(--primary) 40%, transparent);
   outline-offset: 1px;
 }

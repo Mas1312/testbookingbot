@@ -82,6 +82,7 @@ const adminScreens = {
   services: el("admin-screen-services"),
   "service-form": el("admin-screen-service-form"),
   theme: el("admin-screen-theme"),
+  schedule: el("admin-screen-schedule"),
 };
 
 function showScreen(name) {
@@ -221,7 +222,7 @@ function selectService(service) {
 }
 
 async function loadDates() {
-  state.dates = await api("/api/dates");
+  state.dates = await api(`/api/dates?${qs({ business_id: state.businessId })}`);
   const list = el("dates-list");
   list.innerHTML = "";
   state.dates.forEach((date) => {
@@ -396,8 +397,15 @@ el("admin-tab-theme").addEventListener("click", () => {
   openThemeForm(state.config.theme);
 });
 
+el("admin-tab-schedule").addEventListener("click", () => {
+  applyTheme(state.config.theme); // сбрасываем несохранённое превью оформления, если было
+  setActiveAdminTab("admin-tab-schedule");
+  showAdminScreen("schedule");
+  loadSchedule();
+});
+
 function setActiveAdminTab(activeId) {
-  ["admin-tab-orders", "admin-tab-services", "admin-tab-theme"].forEach((id) => {
+  ["admin-tab-orders", "admin-tab-services", "admin-tab-theme", "admin-tab-schedule"].forEach((id) => {
     el(id).classList.toggle("active", id === activeId);
   });
 }
@@ -679,6 +687,49 @@ el("save-theme-btn").addEventListener("click", async () => {
 el("reset-theme-btn").addEventListener("click", () => {
   fillThemeForm(THEME_PRESETS[0]);
   previewTheme();
+});
+
+// ======================================================================
+// АДМИН-РЕЖИМ: расписание
+// ======================================================================
+
+async function loadSchedule() {
+  const schedule = await api(`/api/admin/schedule?${qs({
+    init_data: state.initData,
+    owner_tg_id: state.myTgId,
+    business_id: state.businessId,
+  })}`);
+  el("schedule-timezone").value = schedule.timezone;
+  el("schedule-start").value = schedule.work_start_hour;
+  el("schedule-end").value = schedule.work_end_hour;
+  el("schedule-step").value = schedule.slot_step_minutes;
+  el("schedule-days").value = schedule.days_ahead;
+}
+
+el("save-schedule-btn").addEventListener("click", async () => {
+  const payload = {
+    business_id: state.businessId,
+    init_data: state.initData,
+    owner_tg_id: state.myTgId,
+    timezone: el("schedule-timezone").value,
+    work_start_hour: parseInt(el("schedule-start").value, 10),
+    work_end_hour: parseInt(el("schedule-end").value, 10),
+    slot_step_minutes: parseInt(el("schedule-step").value, 10),
+    days_ahead: parseInt(el("schedule-days").value, 10),
+  };
+
+  if (payload.work_end_hour <= payload.work_start_hour) {
+    alert("Время закрытия должно быть позже времени открытия");
+    return;
+  }
+
+  try {
+    await api("/api/admin/schedule", { method: "PUT", body: JSON.stringify(payload) });
+    el("save-schedule-btn").textContent = "Сохранено ✓";
+    setTimeout(() => { el("save-schedule-btn").textContent = "Сохранить расписание"; }, 1500);
+  } catch (e) {
+    alert(e.message);
+  }
 });
 
 // ======================================================================
