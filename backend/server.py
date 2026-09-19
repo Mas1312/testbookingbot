@@ -1,8 +1,13 @@
 import asyncio
+import base64
+import binascii
 import logging
 import os
+import re
+from datetime import datetime, timezone
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -48,6 +53,8 @@ class BookingRequest(BaseModel):
     client_name: str = "Клиент"
     init_data: str = ""              # подпись Telegram WebApp — из неё берём настоящий id клиента
     client_tg_id: int | None = None  # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
+    client_phone: str | None = Field(default=None, max_length=40)
+    consent: bool = False            # согласие на обработку ПДн (обязательно, если указан телефон)
 
 
 class CancelRequest(BaseModel):
@@ -63,6 +70,8 @@ class ServiceRequest(BaseModel):
     duration_min: int = Field(default=0, ge=0)
     type: str = "slot"        # 'slot' или 'order'
     is_active: bool = True
+    description: str | None = Field(default=None, max_length=600)
+    image_id: int | None = None      # картинка из /api/admin/media
     init_data: str = ""              # подпись Telegram WebApp — см. check_owner
     owner_tg_id: int | None = None   # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
 
@@ -74,17 +83,54 @@ class StatusRequest(BaseModel):
     owner_tg_id: int | None = None
 
 
+HEX_COLOR = r"^#[0-9a-fA-F]{6}$"  # цвета попадают в CSS всех клиентов — принимаем только #RRGGBB
+
+
 class ThemeRequest(BaseModel):
     business_id: int
-    bg_color: str
-    surface_color: str
-    text_color: str
-    hint_color: str
-    primary_color: str
-    primary_text_color: str
-    danger_color: str
-    success_color: str
+    bg_color: str = Field(pattern=HEX_COLOR)
+    surface_color: str = Field(pattern=HEX_COLOR)
+    text_color: str = Field(pattern=HEX_COLOR)
+    hint_color: str = Field(pattern=HEX_COLOR)
+    primary_color: str = Field(pattern=HEX_COLOR)
+    primary_text_color: str = Field(pattern=HEX_COLOR)
+    danger_color: str = Field(pattern=HEX_COLOR)
+    success_color: str = Field(pattern=HEX_COLOR)
     radius: int = Field(ge=0, le=60)
+    bg_mode: Literal["color", "gradient", "image"] = "color"
+    bg_color2: str = Field(default="#FFFFFF", pattern=HEX_COLOR)
+    bg_angle: int = Field(default=160, ge=0, le=360)
+    bg_image_id: int | None = None
+    bg_overlay: int = Field(default=60, ge=0, le=90)      # % «вуали» цвета фона поверх картинки
+    primary_color2: str | None = Field(default=None, pattern=HEX_COLOR)  # задан — кнопки градиентом
+    card_style: Literal["shadow", "flat", "outline"] = "shadow"
+    font: Literal["sans", "serif", "rounded"] = "sans"
+    init_data: str = ""
+    owner_tg_id: int | None = None
+
+
+class SavedThemeRequest(ThemeRequest):
+    name: str = Field(min_length=1, max_length=40)
+
+
+class MediaUploadRequest(BaseModel):
+    business_id: int
+    data_url: str = Field(max_length=1_000_000)   # data:image/...;base64,... (~730 КБ картинки)
+    init_data: str = ""
+    owner_tg_id: int | None = None
+
+
+class LogoRequest(BaseModel):
+    business_id: int
+    media_id: int | None = None
+    init_data: str = ""
+    owner_tg_id: int | None = None
+
+
+class BusinessSettingsRequest(BaseModel):
+    business_id: int
+    collect_phone: Literal["off", "optional", "required"]
+    privacy_url: str | None = Field(default=None, max_length=300)
     init_data: str = ""
     owner_tg_id: int | None = None
 
@@ -157,6 +203,75 @@ def resolve_client(business: dict, init_data: str, client_tg_id_fallback: int | 
     return user_id
 
 
+def media_url(media_id: int | None) -> str | None:
+    return f"/api/media/{media_id}" if media_id else None
+
+
+def theme_with_urls(theme: dict) -> dict:
+    return {**theme, "bg_image_url": media_url(theme.get("bg_image_id"))}
+
+
+def with_image_urls(services: list[dict]) -> list[dict]:
+    return [{**s, "image_url": media_url(s.get("image_id"))} for s in services]
+
+
+def require_own_media(business_id: int, media_id: int | None):
+    if media_id is not None and not database.media_belongs(business_id, media_id):
+        raise HTTPException(status_code=400, detail="Картинка не найдена — загрузите её заново")
+
+
+def clean_text(value: str | None) -> str | None:
+    value = (value or "").strip()
+    return value or None
+
+
+def normalize_phone(raw: str) -> str | None:
+    """Приводит номер к виду +7XXXXXXXXXX (для РФ/СНГ) или +<цифры> (для остальных).
+    Возвращает None, если это не похоже на телефон."""
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 11 and digits[0] in "78":
+        return "+7" + digits[1:]
+    if len(digits) == 10 and digits[0] == "9":
+        return "+7" + digits
+    if 10 <= len(digits) <= 15 and raw.strip().startswith("+"):
+        return "+" + digits
+    return None
+
+
+def resolve_phone(business: dict, booking) -> tuple[str | None, str | None]:
+    """Телефон и момент согласия для заявки. Если владелец сбор телефона не включал,
+    присланный номер молча игнорируем — лишних персональных данных не храним."""
+    mode = business["collect_phone"]
+    if mode == "off":
+        return None, None
+    raw = (booking.client_phone or "").strip()
+    if not raw:
+        if mode == "required":
+            raise HTTPException(status_code=400, detail="Укажите номер телефона")
+        return None, None
+    phone = normalize_phone(raw)
+    if not phone:
+        raise HTTPException(status_code=400, detail="Проверьте номер телефона")
+    if not booking.consent:
+        raise HTTPException(status_code=400, detail="Нужно согласие на обработку персональных данных")
+    return phone, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+MAX_MEDIA_BYTES = 700_000
+
+
+def sniff_image_mime(data: bytes) -> str | None:
+    """Тип по «магическим» байтам — присланному клиентом mime не верим. SVG не принимаем
+    намеренно: он может содержать скрипты."""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def resolve_master(business: dict, service: dict, master_id: int | None):
     """Мастер для записи на позицию по расписанию. None — если выбор мастера у бизнеса
     выключен или позиция без расписания (разовый заказ); иначе мастер обязателен, должен
@@ -189,11 +304,15 @@ def on_startup():
 async def reminder_loop():
     """Раз в минуту проверяет, кому пора отправить напоминание о записи. Ошибка одной
     итерации не должна убивать цикл — иначе напоминания молча прекратятся до рестарта."""
+    tick = 0
     while True:
         try:
             await notifications.send_due_reminders()
+            if tick % 60 == 0:  # раз в час: убираем загруженные, но не применённые картинки
+                database.delete_orphan_media()
         except Exception:
             logging.exception("Сбой цикла напоминаний")
+        tick += 1
         await asyncio.sleep(notifications.REMINDER_INTERVAL_SECONDS)
 
 
@@ -246,14 +365,17 @@ def api_config(business_id: int | None = None):
         "business_name": business["name"],
         "owner_tg_id": business["owner_tg_id"],
         "use_masters": bool(business["use_masters"]),
-        "theme": database.get_theme(business["id"]),
+        "theme": theme_with_urls(database.get_theme(business["id"])),
+        "logo_url": media_url(business["logo_media_id"]),
+        "collect_phone": business["collect_phone"],
+        "privacy_url": business["privacy_url"],
     }
 
 
 @app.get("/api/services")
 def api_services(business_id: int | None = None):
     business = resolve_business(business_id)
-    return database.get_services(business["id"], active_only=True)
+    return with_image_urls(database.get_services(business["id"], active_only=True))
 
 
 @app.get("/api/dates")
@@ -315,11 +437,14 @@ def api_book(booking: BookingRequest, background_tasks: BackgroundTasks):
     if client_tg_id is None and DEV_SKIP_INITDATA_CHECK:
         client_tg_id = booking.client_tg_id
 
+    client_phone, consent_at = resolve_phone(business, booking)
+
     booking_id = database.create_booking(
         business["id"], booking.service_id, service["name"], service["price"], date, time,
         booking.client_name, client_tg_id,
         quantity=max(1, booking.quantity), comment=booking.comment,
         master_id=master["id"] if master else None, master_name=master["name"] if master else None,
+        client_phone=client_phone, consent_at=consent_at,
     )
     background_tasks.add_task(notifications.notify_new_booking, business["id"], booking_id)
     return {
@@ -332,6 +457,19 @@ def api_book(booking: BookingRequest, background_tasks: BackgroundTasks):
         "date": date,
         "time": time,
     }
+
+
+@app.get("/api/media/{media_id}")
+def api_media(media_id: int):
+    """Картинки (логотип, фото позиций, фон) — публичные: их видят все клиенты бизнеса.
+    id не переиспользуются (новая загрузка = новый id), поэтому кэшируем навсегда."""
+    media = database.get_media(media_id)
+    if not media:
+        raise HTTPException(status_code=404, detail="Картинка не найдена")
+    return Response(
+        content=media["data"], media_type=media["mime"],
+        headers={"Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @app.get("/api/my-bookings")
@@ -375,14 +513,18 @@ async def api_cancel_my_booking(booking_id: int, payload: CancelRequest):
 def admin_list_services(business_id: int, init_data: str = "", owner_tg_id: int | None = None):
     business = resolve_business(business_id)
     check_owner(business, init_data, owner_tg_id)
-    return database.get_services(business["id"], active_only=False)
+    return with_image_urls(database.get_services(business["id"], active_only=False))
 
 
 @app.post("/api/admin/services")
 def admin_create_service(payload: ServiceRequest):
     business = resolve_business(payload.business_id)
     check_owner(business, payload.init_data, payload.owner_tg_id)
-    new_id = database.create_service(business["id"], payload.name, payload.price, payload.duration_min, payload.type)
+    require_own_media(business["id"], payload.image_id)
+    new_id = database.create_service(
+        business["id"], payload.name, payload.price, payload.duration_min, payload.type,
+        clean_text(payload.description), payload.image_id,
+    )
     return {"ok": True, "id": new_id}
 
 
@@ -392,8 +534,10 @@ def admin_update_service(service_id: int, payload: ServiceRequest):
     check_owner(business, payload.init_data, payload.owner_tg_id)
     if not database.get_service(business["id"], service_id):
         raise HTTPException(status_code=404, detail="Позиция не найдена")
+    require_own_media(business["id"], payload.image_id)
     database.update_service(
-        business["id"], service_id, payload.name, payload.price, payload.duration_min, payload.type, payload.is_active
+        business["id"], service_id, payload.name, payload.price, payload.duration_min, payload.type, payload.is_active,
+        clean_text(payload.description), payload.image_id,
     )
     return {"ok": True}
 
@@ -503,12 +647,102 @@ async def admin_update_booking(booking_id: int, payload: StatusRequest):
     return {"ok": True}
 
 
+def _theme_dict(business: dict, payload: ThemeRequest) -> dict:
+    """Поля темы из запроса, проверенные на принадлежность картинки этому бизнесу."""
+    theme = payload.model_dump(include=set(database.THEME_FIELDS))
+    require_own_media(business["id"], theme["bg_image_id"])
+    if theme["bg_mode"] == "image" and theme["bg_image_id"] is None:
+        raise HTTPException(status_code=400, detail="Для фона-картинки загрузите картинку")
+    return theme
+
+
 @app.put("/api/admin/theme")
 def admin_update_theme(payload: ThemeRequest):
     business = resolve_business(payload.business_id)
     check_owner(business, payload.init_data, payload.owner_tg_id)
-    database.update_theme(business["id"], payload.model_dump(exclude={"owner_tg_id", "business_id", "init_data"}))
-    return {"ok": True, "theme": database.get_theme(business["id"])}
+    database.update_theme(business["id"], _theme_dict(business, payload))
+    return {"ok": True, "theme": theme_with_urls(database.get_theme(business["id"]))}
+
+
+@app.get("/api/admin/themes/saved")
+def admin_saved_themes(business_id: int, init_data: str = "", owner_tg_id: int | None = None):
+    business = resolve_business(business_id)
+    check_owner(business, init_data, owner_tg_id)
+    return [
+        {**t, "theme": theme_with_urls(t["theme"])} for t in database.get_saved_themes(business["id"])
+    ]
+
+
+@app.post("/api/admin/themes/saved")
+def admin_save_theme(payload: SavedThemeRequest):
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    if len(database.get_saved_themes(business["id"])) >= database.MAX_SAVED_THEMES:
+        raise HTTPException(status_code=400, detail="Можно сохранить не больше 20 вариантов — удалите ненужные")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Введите название варианта")
+    new_id = database.create_saved_theme(business["id"], name, _theme_dict(business, payload))
+    return {"ok": True, "id": new_id}
+
+
+@app.delete("/api/admin/themes/saved/{theme_id}")
+def admin_delete_saved_theme(theme_id: int, business_id: int, init_data: str = "", owner_tg_id: int | None = None):
+    business = resolve_business(business_id)
+    check_owner(business, init_data, owner_tg_id)
+    database.delete_saved_theme(business["id"], theme_id)
+    return {"ok": True}
+
+
+@app.post("/api/admin/media")
+def admin_upload_media(payload: MediaUploadRequest):
+    """Загрузка картинки владельцем. Браузер заранее уменьшает её и присылает как data URL;
+    сервер всё равно проверяет тип по содержимому и размер."""
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    match = re.match(r"^data:image/[a-z+.-]+;base64,(.+)$", payload.data_url, re.DOTALL)
+    if not match:
+        raise HTTPException(status_code=400, detail="Неверный формат картинки")
+    try:
+        data = base64.b64decode(match.group(1), validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="Не удалось прочитать картинку")
+    if len(data) > MAX_MEDIA_BYTES:
+        raise HTTPException(status_code=413, detail="Картинка слишком большая")
+    mime = sniff_image_mime(data)
+    if not mime:
+        raise HTTPException(status_code=400, detail="Поддерживаются только JPEG, PNG и WebP")
+    if database.count_media(business["id"]) >= database.MAX_MEDIA_PER_BUSINESS:
+        raise HTTPException(status_code=400, detail="Достигнут лимит загруженных картинок")
+    media_id = database.create_media(business["id"], mime, data)
+    return {"ok": True, "id": media_id, "url": media_url(media_id)}
+
+
+@app.put("/api/admin/logo")
+def admin_set_logo(payload: LogoRequest):
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    require_own_media(business["id"], payload.media_id)
+    database.set_logo(business["id"], payload.media_id)
+    return {"ok": True, "logo_url": media_url(payload.media_id)}
+
+
+@app.get("/api/admin/settings")
+def admin_get_settings(business_id: int, init_data: str = "", owner_tg_id: int | None = None):
+    business = resolve_business(business_id)
+    check_owner(business, init_data, owner_tg_id)
+    return {"collect_phone": business["collect_phone"], "privacy_url": business["privacy_url"]}
+
+
+@app.put("/api/admin/settings")
+def admin_update_settings(payload: BusinessSettingsRequest):
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    privacy_url = clean_text(payload.privacy_url)
+    if privacy_url and not re.match(r"^https?://\S+$", privacy_url):
+        raise HTTPException(status_code=400, detail="Ссылка на политику должна начинаться с http:// или https://")
+    database.update_business_settings(business["id"], payload.collect_phone, privacy_url)
+    return {"ok": True}
 
 
 @app.get("/api/admin/schedule")

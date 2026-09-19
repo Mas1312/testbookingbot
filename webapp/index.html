@@ -5,10 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Запись онлайн</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="style.css?v=5" />
+  <link rel="stylesheet" href="style.css?v=6" />
 </head>
 <body>
+  <div id="page-bg"></div>
   <header id="brand-bar">
+    <img id="brand-logo" class="brand-logo hidden" alt="" />
     <span id="brand-mark">З</span>
     <span id="brand-name">Загрузка…</span>
   </header>
@@ -65,6 +67,10 @@
       <section id="screen-details" class="screen hidden">
         <button class="back-btn" data-back-dynamic></button>
         <h1>Детали заказа</h1>
+        <div id="details-hero" class="details-hero hidden">
+          <img id="details-photo" class="details-photo hidden" alt="" />
+          <p id="details-desc" class="service-desc"></p>
+        </div>
         <div id="order-summary" class="summary-card"></div>
 
         <div id="quantity-block" class="field-block hidden">
@@ -79,6 +85,16 @@
         <div class="field-block">
           <label>Комментарий к заявке (необязательно)</label>
           <textarea id="comment-input" placeholder="Например: без лука / нужен именно Андрей / аллергия на краску..."></textarea>
+        </div>
+
+        <div id="phone-block" class="field-block hidden">
+          <label id="phone-label" for="phone-input">Телефон</label>
+          <input id="phone-input" type="tel" inputmode="tel" autocomplete="tel" maxlength="40" placeholder="+7 900 000-00-00" />
+          <label class="consent-row">
+            <input type="checkbox" id="consent-check" />
+            <span>Даю согласие на обработку персональных данных (имя, Telegram, телефон) для записи и напоминаний.
+              <a id="privacy-link" href="#">Политика обработки</a></span>
+          </label>
         </div>
       </section>
 
@@ -101,6 +117,7 @@
         <button id="admin-tab-masters" class="admin-tab">Мастера</button>
         <button id="admin-tab-theme" class="admin-tab">Оформление</button>
         <button id="admin-tab-schedule" class="admin-tab">Расписание</button>
+        <button id="admin-tab-settings" class="admin-tab">Настройки</button>
       </div>
 
       <!-- Список заявок -->
@@ -130,6 +147,23 @@
         <div class="field-block">
           <label>Название</label>
           <input id="service-name" type="text" placeholder="Например: Стрижка мужская" />
+        </div>
+
+        <div class="field-block">
+          <label>Описание (необязательно)</label>
+          <textarea id="service-desc" maxlength="600" placeholder="Коротко: что входит, для кого, что взять с собой"></textarea>
+        </div>
+
+        <div class="field-block">
+          <label>Фото (необязательно)</label>
+          <div class="photo-picker">
+            <img id="service-photo-preview" class="photo-preview hidden" alt="" />
+            <div class="photo-actions">
+              <button type="button" id="service-photo-btn" class="add-btn">Загрузить фото</button>
+              <button type="button" id="service-photo-remove" class="link-btn hidden">Убрать фото</button>
+            </div>
+            <input type="file" id="service-photo-file" accept="image/*" class="hidden" />
+          </div>
         </div>
 
         <div class="field-block">
@@ -202,12 +236,56 @@
 
         <div class="preset-row" id="theme-presets"></div>
 
+        <div class="field-block">
+          <label>Мои варианты</label>
+          <div id="saved-themes" class="saved-themes"></div>
+          <div class="save-theme-row">
+            <input id="saved-theme-name" type="text" maxlength="40" placeholder="Название варианта" />
+            <button type="button" id="save-variant-btn" class="add-btn">Сохранить как вариант</button>
+          </div>
+          <p class="hint">Вариант запоминает все текущие настройки, включая фон-картинку. Нажмите на него, чтобы примерить, затем «Сохранить оформление».</p>
+        </div>
+
         <div class="theme-preview" id="theme-preview">
           <div class="theme-preview-card">
             <div class="theme-preview-title">Стрижка мужская</div>
             <div class="theme-preview-meta">30 мин · 1200 ₽</div>
           </div>
           <button class="theme-preview-btn" id="theme-preview-btn" type="button">Подтвердить заявку</button>
+        </div>
+
+        <div class="field-block">
+          <label>Фон страницы</label>
+          <div class="type-toggle">
+            <button type="button" class="type-btn bg-mode-btn active" data-mode="color">Цвет</button>
+            <button type="button" class="type-btn bg-mode-btn" data-mode="gradient">Градиент</button>
+            <button type="button" class="type-btn bg-mode-btn" data-mode="image">Картинка</button>
+          </div>
+        </div>
+
+        <div id="bg-gradient-block" class="field-block hidden">
+          <div class="theme-field-grid">
+            <label class="color-field">
+              <span>Второй цвет градиента</span>
+              <span class="color-input-wrap"><input type="color" id="theme-bg_color2" /></span>
+            </label>
+          </div>
+          <label>Угол градиента: <span id="angle-value">160</span>°</label>
+          <input type="range" id="theme-bg_angle" min="0" max="360" step="5" class="radius-slider" />
+        </div>
+
+        <div id="bg-image-block" class="field-block hidden">
+          <div class="photo-picker">
+            <img id="bg-image-preview" class="photo-preview wide hidden" alt="" />
+            <div class="photo-actions">
+              <button type="button" id="bg-image-btn" class="add-btn">Загрузить картинку</button>
+              <button type="button" id="bg-image-remove" class="link-btn hidden">Убрать картинку</button>
+            </div>
+            <input type="file" id="bg-image-file" accept="image/*" class="hidden" />
+          </div>
+          <label>Затемнение/осветление фона: <span id="overlay-value">60</span>%</label>
+          <input type="range" id="theme-bg_overlay" min="0" max="90" step="5" class="radius-slider" />
+          <p class="hint">Вуаль цвета фона поверх картинки — чтобы текст оставался читаемым.</p>
         </div>
 
         <div class="theme-field-grid">
@@ -246,12 +324,79 @@
         </div>
 
         <div class="field-block">
+          <label class="check-inline"><input type="checkbox" id="button-gradient-toggle" /> Кнопки градиентом</label>
+          <div id="button-gradient-block" class="theme-field-grid hidden">
+            <label class="color-field">
+              <span>Второй цвет кнопок</span>
+              <span class="color-input-wrap"><input type="color" id="theme-primary_color2" value="#FF9A3C" /></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="theme-field-grid">
+          <div class="field-block">
+            <label>Карточки</label>
+            <select id="theme-card_style">
+              <option value="shadow">С тенью</option>
+              <option value="flat">Плоские</option>
+              <option value="outline">С рамкой</option>
+            </select>
+          </div>
+          <div class="field-block">
+            <label>Шрифт</label>
+            <select id="theme-font">
+              <option value="sans">Современный</option>
+              <option value="rounded">Мягкий</option>
+              <option value="serif">Классический (с засечками)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field-block">
+          <label>Логотип</label>
+          <div class="photo-picker">
+            <img id="logo-preview" class="photo-preview logo hidden" alt="" />
+            <div class="photo-actions">
+              <button type="button" id="logo-btn" class="add-btn">Загрузить логотип</button>
+              <button type="button" id="logo-remove" class="link-btn hidden">Убрать логотип</button>
+            </div>
+            <input type="file" id="logo-file" accept="image/*" class="hidden" />
+          </div>
+          <p class="hint">Показывается в шапке вместо буквы. Логотип сохраняется сразу, без кнопки «Сохранить оформление».</p>
+        </div>
+
+        <div class="field-block">
           <label>Скругление углов: <span id="radius-value">16</span>px</label>
           <input type="range" id="theme-radius" min="0" max="28" step="1" class="radius-slider" />
         </div>
 
         <button id="save-theme-btn" class="primary-btn">Сохранить оформление</button>
         <button id="reset-theme-btn" class="add-btn">Сбросить к цветам по умолчанию</button>
+      </section>
+
+      <!-- Настройки: сбор телефона и политика -->
+      <section id="admin-screen-settings" class="screen hidden">
+        <h1>Настройки</h1>
+        <p class="hint theme-intro">Персональные данные клиентов — ответственность владельца бизнеса. Собирайте только то, что нужно.</p>
+
+        <div class="field-block">
+          <label>Телефон клиента при записи</label>
+          <select id="settings-collect-phone">
+            <option value="off">Не спрашивать</option>
+            <option value="optional">Спрашивать, необязательно</option>
+            <option value="required">Обязательно</option>
+          </select>
+          <p class="hint">Если телефон не нужен — оставьте «Не спрашивать»: написать клиенту можно и через Telegram, ссылка есть в карточке заявки.
+          При сборе телефона клиент ставит галочку согласия на обработку персональных данных.</p>
+        </div>
+
+        <div class="field-block">
+          <label>Ссылка на вашу политику обработки ПДн</label>
+          <input id="settings-privacy-url" type="text" maxlength="300" placeholder="https://… (необязательно)" />
+          <p class="hint">Если оставить пустым, клиентам покажется стандартный шаблон политики. Это шаблон, а не юридическая консультация — перед платными клиентами покажите его юристу или укажите свой документ.</p>
+        </div>
+
+        <button id="save-settings-btn" class="primary-btn">Сохранить настройки</button>
       </section>
 
       <!-- Расписание работы -->
@@ -315,6 +460,6 @@
 
   </div>
 
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

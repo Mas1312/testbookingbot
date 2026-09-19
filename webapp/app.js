@@ -89,6 +89,7 @@ const adminScreens = {
   "service-form": el("admin-screen-service-form"),
   masters: el("admin-screen-masters"),
   "master-form": el("admin-screen-master-form"),
+  settings: el("admin-screen-settings"),
   theme: el("admin-screen-theme"),
   schedule: el("admin-screen-schedule"),
 };
@@ -124,6 +125,102 @@ function qs(params) {
   return usp.toString();
 }
 
+// URL картинок строит сервер (/api/media/<id>); перед вставкой в HTML/CSS всё равно проверяем формат.
+const safeMediaUrl = (url) => (typeof url === "string" && /^\/api\/media\/\d+$/.test(url) ? url : null);
+
+// localStorage может быть недоступен (приватный режим и т.п.) — всё в try/catch.
+function storageGet(key) {
+  try { return localStorage.getItem(key) || ""; } catch (e) { return ""; }
+}
+function storageSet(key, value) {
+  try { localStorage.setItem(key, value); } catch (e) { /* не критично */ }
+}
+
+// Уменьшаем картинку в браузере до загрузки (и заодно убираем EXIF/геометки — canvas их не переносит).
+async function fileToDataUrl(file, { maxSide, quality = 0.82, png = false }) {
+  if (!file || !file.type.startsWith("image/")) throw new Error("Выберите файл-картинку");
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch (e) {
+    throw new Error("Не удалось открыть картинку (подойдут JPEG, PNG, WebP)");
+  }
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!png) {
+    ctx.fillStyle = "#ffffff"; // у JPEG нет прозрачности
+    ctx.fillRect(0, 0, w, h);
+  }
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  if (bitmap.close) bitmap.close();
+
+  const LIMIT = 900000; // символов data URL; сервер принимает до ~1 000 000
+  let q = quality;
+  let url = png ? canvas.toDataURL("image/png") : canvas.toDataURL("image/jpeg", q);
+  while (!png && url.length > LIMIT && q > 0.4) {
+    q -= 0.1;
+    url = canvas.toDataURL("image/jpeg", q);
+  }
+  if (url.length > LIMIT) throw new Error("Картинка слишком большая, выберите поменьше");
+  return url;
+}
+
+async function uploadImage(file, opts) {
+  const dataUrl = await fileToDataUrl(file, opts);
+  return api("/api/admin/media", { method: "POST", body: JSON.stringify({ ...adminAuth(), data_url: dataUrl }) });
+}
+
+// Общий блок «загрузить / убрать картинку»: id элементов — <prefix>-btn / -file / -remove / -preview.
+function showPicked(prefix, image) {
+  const preview = el(`${prefix}-preview`);
+  const url = image ? safeMediaUrl(image.url) : null;
+  if (url) {
+    preview.src = url;
+    preview.classList.remove("hidden");
+  } else {
+    preview.classList.add("hidden");
+    preview.removeAttribute("src");
+  }
+  el(`${prefix}-remove`).classList.toggle("hidden", !url);
+}
+
+function bindPhotoPicker(prefix, opts, onPick, onClear) {
+  const btn = el(`${prefix}-btn`);
+  btn.addEventListener("click", () => el(`${prefix}-file`).click());
+  el(`${prefix}-file`).addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    const label = btn.textContent;
+    btn.textContent = "Загружаю…";
+    btn.disabled = true;
+    try {
+      const uploaded = await uploadImage(file, opts);
+      const image = { id: uploaded.id, url: uploaded.url };
+      await onPick(image);
+      showPicked(prefix, image);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      btn.textContent = label;
+      btn.disabled = false;
+    }
+  });
+  el(`${prefix}-remove`).addEventListener("click", async () => {
+    try {
+      await onClear();
+      showPicked(prefix, null);
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+}
+
 function formatDateLabel(isoDate) {
   const d = new Date(isoDate + "T00:00:00");
   const weekdays = ["ВС", "ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ"];
@@ -146,21 +243,52 @@ const THEME_VAR_MAP = {
   success_color: "--success",
 };
 
-function applyTheme(theme) {
-  if (!theme) return;
-  const root = document.documentElement.style;
-  Object.entries(THEME_VAR_MAP).forEach(([key, cssVar]) => {
-    if (theme[key]) root.setProperty(cssVar, theme[key]);
-  });
-  if (theme.radius !== undefined && theme.radius !== null) {
-    root.setProperty("--radius", `${theme.radius}px`);
+// Фон страницы: цвет (--bg на body), градиент или картинка с «вуалью» цвета фона поверх.
+function buildPageBackground(theme) {
+  if (theme.bg_mode === "gradient" && theme.bg_color2) {
+    return `linear-gradient(${theme.bg_angle ?? 160}deg, ${theme.bg_color}, ${theme.bg_color2})`;
   }
+  const image = theme.bg_mode === "image" ? safeMediaUrl(theme.bg_image_url) : null;
+  if (image) {
+    const veil = `color-mix(in srgb, var(--bg) ${theme.bg_overlay ?? 60}%, transparent)`;
+    return `linear-gradient(${veil}, ${veil}), url("${image}") center / cover no-repeat`;
+  }
+  return "none";
 }
 
-function applyBrand(businessName) {
+function applyTheme(theme) {
+  if (!theme) return;
+  const root = document.documentElement;
+  Object.entries(THEME_VAR_MAP).forEach(([key, cssVar]) => {
+    if (theme[key]) root.style.setProperty(cssVar, theme[key]);
+  });
+  if (theme.radius !== undefined && theme.radius !== null) {
+    root.style.setProperty("--radius", `${theme.radius}px`);
+  }
+  root.style.setProperty(
+    "--primary-fill",
+    theme.primary_color2 ? `linear-gradient(135deg, ${theme.primary_color}, ${theme.primary_color2})` : "var(--primary)",
+  );
+  root.dataset.cards = theme.card_style || "shadow";
+  root.dataset.font = theme.font || "sans";
+  el("page-bg").style.background = buildPageBackground(theme);
+}
+
+function applyBrand(businessName, logoUrl) {
   const name = businessName || "Онлайн-запись";
   el("brand-name").textContent = name;
   el("brand-mark").textContent = name.trim().charAt(0).toUpperCase() || "З";
+  const logo = el("brand-logo");
+  const url = safeMediaUrl(logoUrl);
+  if (url) {
+    logo.src = url;
+    logo.classList.remove("hidden");
+    el("brand-mark").classList.add("hidden");
+  } else {
+    logo.classList.add("hidden");
+    logo.removeAttribute("src");
+    el("brand-mark").classList.remove("hidden");
+  }
 }
 
 // ======================================================================
@@ -204,10 +332,13 @@ async function loadServices() {
     const card = document.createElement("div");
     card.className = "card";
     const meta = service.type === "slot" ? `${service.duration_min} мин` : "В наличии";
+    const photo = safeMediaUrl(service.image_url);
     card.innerHTML = `
-      <div>
+      ${photo ? `<img class="card-thumb" src="${photo}" loading="lazy" alt="" />` : ""}
+      <div class="card-body">
         <div class="title">${escapeHtml(service.name)}</div>
         <div class="meta">${meta}</div>
+        ${service.description ? `<div class="desc">${escapeHtml(service.description)}</div>` : ""}
       </div>
       <span class="price-tag">${service.price} ₽</span>
     `;
@@ -412,6 +543,25 @@ function showDetailsScreen() {
   const s = state.selectedService;
   const isOrder = s.type === "order";
 
+  const heroPhoto = safeMediaUrl(s.image_url);
+  if (heroPhoto) {
+    el("details-photo").src = heroPhoto;
+  } else {
+    el("details-photo").removeAttribute("src");
+  }
+  el("details-photo").classList.toggle("hidden", !heroPhoto);
+  el("details-desc").textContent = s.description || "";
+  el("details-desc").classList.toggle("hidden", !s.description);
+  el("details-hero").classList.toggle("hidden", !heroPhoto && !s.description);
+
+  const phoneMode = state.config.collect_phone || "off";
+  el("phone-block").classList.toggle("hidden", phoneMode === "off");
+  el("phone-label").textContent = phoneMode === "required" ? "Телефон" : "Телефон (необязательно)";
+  if (phoneMode !== "off") {
+    if (!el("phone-input").value) el("phone-input").value = storageGet("tgb_phone");
+    el("consent-check").checked = false; // согласие даётся заново при каждой заявке
+  }
+
   el("quantity-block").classList.toggle("hidden", !isOrder);
   el("qty-value").textContent = state.quantity;
   el("comment-input").value = state.comment;
@@ -463,9 +613,36 @@ el("comment-input").addEventListener("input", (e) => {
   state.comment = e.target.value;
 });
 
+el("privacy-link").addEventListener("click", (e) => {
+  e.preventDefault();
+  const url = state.config.privacy_url || `${location.origin}/privacy.html?business_id=${state.businessId}`;
+  if (isRealTelegram && tg.openLink) {
+    tg.openLink(url);
+  } else {
+    window.open(url, "_blank");
+  }
+});
+
 async function submitBooking() {
   const user = tg.initDataUnsafe && tg.initDataUnsafe.user;
   const s = state.selectedService;
+
+  const phoneMode = state.config.collect_phone || "off";
+  let phone = null;
+  let consent = false;
+  if (phoneMode !== "off") {
+    phone = el("phone-input").value.trim();
+    consent = el("consent-check").checked;
+    if (!phone && phoneMode === "required") {
+      alert("Укажите номер телефона");
+      return;
+    }
+    if (phone && !consent) {
+      alert("Отметьте согласие на обработку персональных данных");
+      return;
+    }
+  }
+
   try {
     const result = await api("/api/book", {
       method: "POST",
@@ -480,8 +657,11 @@ async function submitBooking() {
         client_name: user ? `${user.first_name || ""} ${user.last_name || ""}`.trim() : "Гость",
         init_data: state.initData,
         client_tg_id: user ? user.id : null,
+        client_phone: phone || null,
+        consent,
       }),
     });
+    if (phone) storageSet("tgb_phone", phone);
 
     let rows = `<div class="row"><span class="label">Позиция</span><span>${escapeHtml(result.service_name)}</span></div>`;
     if (result.master_name) {
@@ -545,6 +725,13 @@ el("admin-tab-masters").addEventListener("click", () => {
   loadAdminMasters();
 });
 
+el("admin-tab-settings").addEventListener("click", () => {
+  applyTheme(state.config.theme); // сбрасываем несохранённое превью оформления, если было
+  setActiveAdminTab("admin-tab-settings");
+  showAdminScreen("settings");
+  loadSettings();
+});
+
 el("admin-tab-theme").addEventListener("click", () => {
   setActiveAdminTab("admin-tab-theme");
   showAdminScreen("theme");
@@ -559,7 +746,7 @@ el("admin-tab-schedule").addEventListener("click", () => {
 });
 
 function setActiveAdminTab(activeId) {
-  ["admin-tab-orders", "admin-tab-services", "admin-tab-masters", "admin-tab-theme", "admin-tab-schedule"].forEach((id) => {
+  ["admin-tab-orders", "admin-tab-services", "admin-tab-masters", "admin-tab-theme", "admin-tab-schedule", "admin-tab-settings"].forEach((id) => {
     el(id).classList.toggle("active", id === activeId);
   });
 }
@@ -607,6 +794,7 @@ async function loadAdminOrders() {
           <div class="order-title">${escapeHtml(order.service_name)}${qtyText}</div>
           <div class="order-meta">${escapeHtml(order.client_name) || "Без имени"} · ${whenText}</div>
           ${order.master_name ? `<div class="order-meta">Мастер: ${escapeHtml(order.master_name)}</div>` : ""}
+          ${order.client_phone ? `<div class="order-meta">📞 ${escapeHtml(order.client_phone)}</div>` : ""}
           <div class="order-meta">${order.price * order.quantity} ₽</div>
         </div>
         <span class="status-badge status-${order.status}">${statusLabels[order.status] || order.status}</span>
@@ -657,10 +845,14 @@ async function loadAdminServices() {
     const card = document.createElement("div");
     card.className = "service-admin-card" + (service.is_active ? "" : " inactive");
     const meta = service.type === "slot" ? `${service.duration_min} мин · по расписанию` : "разовый заказ";
+    const thumb = safeMediaUrl(service.image_url);
     card.innerHTML = `
-      <div>
-        <div class="title">${escapeHtml(service.name)} — ${service.price} ₽</div>
-        <div class="badge-type">${meta}${service.is_active ? "" : " · скрыта"}</div>
+      <div style="display:flex;align-items:center;min-width:0">
+        ${thumb ? `<img class="admin-thumb" src="${thumb}" alt="" />` : ""}
+        <div>
+          <div class="title">${escapeHtml(service.name)} — ${service.price} ₽</div>
+          <div class="badge-type">${meta}${service.is_active ? "" : " · скрыта"}</div>
+        </div>
       </div>
       <span>✎</span>
     `;
@@ -677,6 +869,11 @@ function openServiceForm(service) {
   el("service-name").value = service ? service.name : "";
   el("service-price").value = service ? service.price : "";
   el("service-duration").value = service ? service.duration_min : "";
+  el("service-desc").value = service && service.description ? service.description : "";
+  state.admin.serviceImage = service && service.image_id && safeMediaUrl(service.image_url)
+    ? { id: service.image_id, url: service.image_url }
+    : null;
+  showPicked("service-photo", state.admin.serviceImage);
   setServiceType(service ? service.type : "slot");
   el("delete-service-btn").classList.toggle("hidden", !service);
   showAdminScreen("service-form");
@@ -688,6 +885,12 @@ function setServiceType(type) {
   el("duration-block").classList.toggle("hidden", type === "order");
   el("service-form-title").dataset.type = type;
 }
+
+bindPhotoPicker(
+  "service-photo", { maxSide: 900, quality: 0.82 },
+  async (image) => { state.admin.serviceImage = image; },
+  async () => { state.admin.serviceImage = null; },
+);
 
 el("type-slot").addEventListener("click", () => setServiceType("slot"));
 el("type-order").addEventListener("click", () => setServiceType("order"));
@@ -709,6 +912,8 @@ el("save-service-btn").addEventListener("click", async () => {
 
   const payload = {
     name, price, duration_min: duration, type,
+    description: el("service-desc").value.trim() || null,
+    image_id: state.admin.serviceImage ? state.admin.serviceImage.id : null,
     is_active: true, init_data: state.initData, owner_tg_id: state.myTgId, business_id: state.businessId,
   };
 
@@ -859,6 +1064,11 @@ el("delete-master-btn").addEventListener("click", async () => {
 // АДМИН-РЕЖИМ: оформление
 // ======================================================================
 
+const THEME_EXTRA_DEFAULTS = {
+  bg_mode: "color", bg_color2: "#FFFFFF", bg_angle: 160, bg_image_id: null, bg_image_url: null,
+  bg_overlay: 60, primary_color2: null, card_style: "shadow", font: "sans",
+};
+
 const THEME_PRESETS = [
   {
     name: "Фуд-сервис", bg_color: "#FAFAFA", surface_color: "#FFFFFF", text_color: "#1A1A1A",
@@ -885,7 +1095,42 @@ const THEME_PRESETS = [
     hint_color: "#8A8A8A", primary_color: "#111111", primary_text_color: "#FFFFFF",
     danger_color: "#C0392B", success_color: "#1E824C", radius: 4,
   },
+  {
+    name: "Закат", bg_mode: "gradient", bg_color: "#FFF1E6", bg_color2: "#FFD3E0", bg_angle: 160,
+    surface_color: "#FFFFFF", text_color: "#3B1F2B", hint_color: "#8A6F78",
+    primary_color: "#F0563F", primary_color2: "#FF9A3C", primary_text_color: "#FFFFFF",
+    danger_color: "#C62828", success_color: "#2E7D32", radius: 20, font: "rounded",
+  },
+  {
+    name: "Лаванда", bg_mode: "gradient", bg_color: "#F3EEFF", bg_color2: "#DDEBFF", bg_angle: 160,
+    surface_color: "#FFFFFF", text_color: "#24204A", hint_color: "#74709A",
+    primary_color: "#6C4CF1", primary_color2: "#9B6BFF", primary_text_color: "#FFFFFF",
+    danger_color: "#D6336C", success_color: "#2B8A3E", radius: 22, font: "rounded",
+  },
+  {
+    name: "Мята", bg_mode: "gradient", bg_color: "#E6FAF1", bg_color2: "#E4F1FF", bg_angle: 150,
+    surface_color: "#FFFFFF", text_color: "#10352B", hint_color: "#5F8177",
+    primary_color: "#12B981", primary_color2: "#0EA5A5", primary_text_color: "#FFFFFF",
+    danger_color: "#D9480F", success_color: "#0F766E", radius: 18,
+  },
+  {
+    name: "Ночь", bg_mode: "gradient", bg_color: "#0F1226", bg_color2: "#1E2247", bg_angle: 170,
+    surface_color: "#1D2140", text_color: "#F2F4FF", hint_color: "#9AA0C7",
+    primary_color: "#7C83FF", primary_color2: "#B26BFF", primary_text_color: "#FFFFFF",
+    danger_color: "#FF6B7A", success_color: "#4ADE9A", radius: 16, card_style: "outline",
+  },
+  {
+    name: "Кофе", bg_color: "#F6EFE7", surface_color: "#FFFDF9", text_color: "#3A2A1E",
+    hint_color: "#8C7663", primary_color: "#7A4B2A", primary_text_color: "#FFFFFF",
+    danger_color: "#B3261E", success_color: "#3F7D3A", radius: 8, font: "serif", card_style: "outline",
+  },
 ];
+
+function primaryFillCss(theme) {
+  return theme.primary_color2
+    ? `linear-gradient(135deg, ${theme.primary_color}, ${theme.primary_color2})`
+    : theme.primary_color;
+}
 
 function renderThemePresets() {
   const row = el("theme-presets");
@@ -893,7 +1138,7 @@ function renderThemePresets() {
   THEME_PRESETS.forEach((preset) => {
     const btn = document.createElement("button");
     btn.className = "preset-swatch";
-    btn.innerHTML = `<span class="dot" style="background:${preset.primary_color}"></span><span>${preset.name}</span>`;
+    btn.innerHTML = `<span class="dot" style="background:${primaryFillCss(preset)}"></span><span>${preset.name}</span>`;
     btn.addEventListener("click", () => {
       fillThemeForm(preset);
       previewTheme();
@@ -902,12 +1147,39 @@ function renderThemePresets() {
   });
 }
 
+function setBgMode(mode) {
+  state.admin.bgMode = mode;
+  document.querySelectorAll(".bg-mode-btn").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+  el("bg-gradient-block").classList.toggle("hidden", mode !== "gradient");
+  el("bg-image-block").classList.toggle("hidden", mode !== "image");
+}
+
+function setButtonGradient(enabled) {
+  el("button-gradient-toggle").checked = enabled;
+  el("button-gradient-block").classList.toggle("hidden", !enabled);
+}
+
 function fillThemeForm(theme) {
+  const t = { ...THEME_EXTRA_DEFAULTS, ...theme };
   Object.keys(THEME_VAR_MAP).forEach((key) => {
-    el(`theme-${key}`).value = theme[key];
+    el(`theme-${key}`).value = t[key];
   });
-  el("theme-radius").value = theme.radius;
-  el("radius-value").textContent = theme.radius;
+  el("theme-radius").value = t.radius;
+  el("radius-value").textContent = t.radius;
+
+  setBgMode(t.bg_mode);
+  el("theme-bg_color2").value = t.bg_color2;
+  el("theme-bg_angle").value = t.bg_angle;
+  el("angle-value").textContent = t.bg_angle;
+  el("theme-bg_overlay").value = t.bg_overlay;
+  el("overlay-value").textContent = t.bg_overlay;
+  state.admin.themeBg = t.bg_image_id && safeMediaUrl(t.bg_image_url) ? { id: t.bg_image_id, url: t.bg_image_url } : null;
+  showPicked("bg-image", state.admin.themeBg);
+
+  setButtonGradient(!!t.primary_color2);
+  if (t.primary_color2) el("theme-primary_color2").value = t.primary_color2;
+  el("theme-card_style").value = t.card_style;
+  el("theme-font").value = t.font;
 }
 
 function readThemeForm() {
@@ -916,6 +1188,15 @@ function readThemeForm() {
     theme[key] = el(`theme-${key}`).value;
   });
   theme.radius = parseInt(el("theme-radius").value, 10);
+  theme.bg_mode = state.admin.bgMode || "color";
+  theme.bg_color2 = el("theme-bg_color2").value;
+  theme.bg_angle = parseInt(el("theme-bg_angle").value, 10);
+  theme.bg_overlay = parseInt(el("theme-bg_overlay").value, 10);
+  theme.bg_image_id = state.admin.themeBg ? state.admin.themeBg.id : null;
+  theme.bg_image_url = state.admin.themeBg ? state.admin.themeBg.url : null;
+  theme.primary_color2 = el("button-gradient-toggle").checked ? el("theme-primary_color2").value : null;
+  theme.card_style = el("theme-card_style").value;
+  theme.font = el("theme-font").value;
   return theme;
 }
 
@@ -926,20 +1207,72 @@ function previewTheme() {
 function openThemeForm(theme) {
   renderThemePresets();
   fillThemeForm(theme || state.config.theme);
+  showPicked("logo", state.config.logo_url ? { url: state.config.logo_url } : null);
+  loadSavedThemes();
 }
 
 document.querySelectorAll('.theme-field-grid input[type="color"]').forEach((input) => {
   input.addEventListener("input", previewTheme);
 });
 
+document.querySelectorAll(".bg-mode-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    setBgMode(btn.dataset.mode);
+    previewTheme();
+  });
+});
+
+el("theme-bg_angle").addEventListener("input", () => {
+  el("angle-value").textContent = el("theme-bg_angle").value;
+  previewTheme();
+});
+
+el("theme-bg_overlay").addEventListener("input", () => {
+  el("overlay-value").textContent = el("theme-bg_overlay").value;
+  previewTheme();
+});
+
+el("button-gradient-toggle").addEventListener("change", () => {
+  setButtonGradient(el("button-gradient-toggle").checked);
+  previewTheme();
+});
+
+["theme-card_style", "theme-font"].forEach((id) => el(id).addEventListener("change", previewTheme));
+
 el("theme-radius").addEventListener("input", () => {
   el("radius-value").textContent = el("theme-radius").value;
   previewTheme();
 });
 
+// Картинка фона: загружается сразу на сервер, но применяется к бизнесу только по «Сохранить оформление».
+bindPhotoPicker(
+  "bg-image", { maxSide: 1280, quality: 0.72 },
+  async (image) => { state.admin.themeBg = image; previewTheme(); },
+  async () => { state.admin.themeBg = null; previewTheme(); },
+);
+
+// Логотип сохраняется сразу — он не часть «цветовой схемы».
+bindPhotoPicker(
+  "logo", { maxSide: 256, png: true },
+  async (image) => {
+    await api("/api/admin/logo", { method: "PUT", body: JSON.stringify({ ...adminAuth(), media_id: image.id }) });
+    state.config.logo_url = image.url;
+    applyBrand(state.config.business_name, image.url);
+  },
+  async () => {
+    await api("/api/admin/logo", { method: "PUT", body: JSON.stringify({ ...adminAuth(), media_id: null }) });
+    state.config.logo_url = null;
+    applyBrand(state.config.business_name, null);
+  },
+);
+
 el("save-theme-btn").addEventListener("click", async () => {
   try {
     const payload = readThemeForm();
+    if (payload.bg_mode === "image" && !payload.bg_image_id) {
+      alert("Загрузите картинку для фона или выберите другой тип фона");
+      return;
+    }
     const result = await api("/api/admin/theme", { method: "PUT", body: JSON.stringify(payload) });
     state.config.theme = result.theme;
     applyTheme(result.theme);
@@ -953,6 +1286,88 @@ el("save-theme-btn").addEventListener("click", async () => {
 el("reset-theme-btn").addEventListener("click", () => {
   fillThemeForm(THEME_PRESETS[0]);
   previewTheme();
+});
+
+// ---------- Сохранённые варианты оформления ----------
+
+async function loadSavedThemes() {
+  const box = el("saved-themes");
+  try {
+    state.admin.savedThemes = await api(`/api/admin/themes/saved?${qs(adminAuth())}`);
+  } catch (e) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = "";
+  state.admin.savedThemes.forEach((saved) => {
+    const row = document.createElement("div");
+    row.className = "saved-theme-row";
+    row.innerHTML = `<span class="dot" style="background:${primaryFillCss(saved.theme)}"></span>
+      <span class="name">${escapeHtml(saved.name)}</span>
+      <button type="button" class="link-btn" title="Удалить">✕</button>`;
+    row.addEventListener("click", () => {
+      fillThemeForm(saved.theme);
+      previewTheme();
+    });
+    row.querySelector(".link-btn").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Удалить вариант «${saved.name}»?`)) return;
+      try {
+        await api(`/api/admin/themes/saved/${saved.id}?${qs(adminAuth())}`, { method: "DELETE" });
+      } catch (err) {
+        alert(err.message);
+      }
+      loadSavedThemes();
+    });
+    box.appendChild(row);
+  });
+}
+
+el("save-variant-btn").addEventListener("click", async () => {
+  const name = el("saved-theme-name").value.trim();
+  if (!name) {
+    alert("Введите название варианта");
+    return;
+  }
+  const payload = { ...readThemeForm(), name };
+  if (payload.bg_mode === "image" && !payload.bg_image_id) {
+    alert("Загрузите картинку для фона или выберите другой тип фона");
+    return;
+  }
+  try {
+    await api("/api/admin/themes/saved", { method: "POST", body: JSON.stringify(payload) });
+    el("saved-theme-name").value = "";
+    loadSavedThemes();
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+// ======================================================================
+// АДМИН-РЕЖИМ: настройки (телефон клиента, политика)
+// ======================================================================
+
+async function loadSettings() {
+  const settings = await api(`/api/admin/settings?${qs(adminAuth())}`);
+  el("settings-collect-phone").value = settings.collect_phone;
+  el("settings-privacy-url").value = settings.privacy_url || "";
+}
+
+el("save-settings-btn").addEventListener("click", async () => {
+  const payload = {
+    ...adminAuth(),
+    collect_phone: el("settings-collect-phone").value,
+    privacy_url: el("settings-privacy-url").value.trim() || null,
+  };
+  try {
+    await api("/api/admin/settings", { method: "PUT", body: JSON.stringify(payload) });
+    state.config.collect_phone = payload.collect_phone;
+    state.config.privacy_url = payload.privacy_url;
+    el("save-settings-btn").textContent = "Сохранено ✓";
+    setTimeout(() => { el("save-settings-btn").textContent = "Сохранить настройки"; }, 1500);
+  } catch (e) {
+    alert(e.message);
+  }
 });
 
 // ======================================================================
@@ -1006,7 +1421,7 @@ async function init() {
   state.config = await api(`/api/config?${qs({ business_id: state.businessId })}`);
   state.businessId = state.config.business_id; // синхронизируем с тем, что реально отдал бэкенд (если в URL параметра не было)
   applyTheme(state.config.theme);
-  applyBrand(state.config.business_name);
+  applyBrand(state.config.business_name, state.config.logo_url);
 
   const user = tg.initDataUnsafe && tg.initDataUnsafe.user;
   state.myTgId = user ? user.id : null;

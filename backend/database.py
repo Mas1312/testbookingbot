@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
@@ -61,6 +62,20 @@ def init_db():
         "days_ahead": "INTEGER NOT NULL DEFAULT 7",
         # Включает шаг «выбор мастера» для клиентов (см. таблицу masters).
         "use_masters": "INTEGER NOT NULL DEFAULT 0",
+        # Оформление сверх базовых цветов: фон (цвет / градиент / картинка), градиент кнопок,
+        # стиль карточек, шрифт, логотип. Картинки лежат в таблице media.
+        "bg_mode": "TEXT NOT NULL DEFAULT 'color'",
+        "bg_color2": "TEXT NOT NULL DEFAULT '#FFFFFF'",
+        "bg_angle": "INTEGER NOT NULL DEFAULT 160",
+        "bg_image_id": "INTEGER",
+        "bg_overlay": "INTEGER NOT NULL DEFAULT 60",
+        "primary_color2": "TEXT",
+        "card_style": "TEXT NOT NULL DEFAULT 'shadow'",
+        "font": "TEXT NOT NULL DEFAULT 'sans'",
+        "logo_media_id": "INTEGER",
+        # Сбор телефона клиента: 'off' | 'optional' | 'required'; ссылка на свою политику ПДн.
+        "collect_phone": "TEXT NOT NULL DEFAULT 'off'",
+        "privacy_url": "TEXT",
     })
 
     cur.execute("""
@@ -74,6 +89,35 @@ def init_db():
             is_active INTEGER NOT NULL DEFAULT 1,
             sort_order INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (business_id) REFERENCES businesses (id)
+        )
+    """)
+
+    _ensure_columns(conn, "services", {
+        "description": "TEXT",
+        "image_id": "INTEGER",
+    })
+
+    # Картинки (фото позиций, логотип, фон). Лежат в самой БД (BLOB), а не на диске: диск на
+    # бесплатном хостинге эфемерный, а так картинки переезжают вместе с базой.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS media (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER NOT NULL,
+            mime TEXT NOT NULL,
+            data BLOB NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Сохранённые владельцем варианты оформления. bg_image_id вынесен в колонку, чтобы
+    # знать, какие картинки ещё нужны (см. delete_media_if_unused).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS saved_themes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            data TEXT NOT NULL,
+            bg_image_id INTEGER
         )
     """)
 
@@ -127,6 +171,9 @@ def init_db():
         # Отправлены ли напоминания клиенту (за сутки / за 2 часа) — чтобы не слать дважды.
         "reminded_24h": "INTEGER NOT NULL DEFAULT 0",
         "reminded_2h": "INTEGER NOT NULL DEFAULT 0",
+        # Телефон клиента (нормализованный, +7...) и момент согласия на обработку ПДн.
+        "client_phone": "TEXT",
+        "consent_at": "TEXT",
     })
 
     conn.commit()
@@ -218,6 +265,8 @@ def get_business_by_bot_token(bot_token: str):
 THEME_FIELDS = (
     "bg_color", "surface_color", "text_color", "hint_color",
     "primary_color", "primary_text_color", "danger_color", "success_color", "radius",
+    "bg_mode", "bg_color2", "bg_angle", "bg_image_id", "bg_overlay",
+    "primary_color2", "card_style", "font",
 )
 
 
@@ -227,22 +276,151 @@ def get_theme(business_id: int):
 
 
 def update_theme(business_id: int, theme: dict):
+    """Сохраняет тему и убирает картинку старого фона, если она больше нигде не нужна."""
+    old_bg = (get_business(business_id) or {}).get("bg_image_id")
     conn = get_connection()
+    assignments = ", ".join(f"{field} = ?" for field in THEME_FIELDS)  # имена полей — константы выше
     conn.execute(
-        """
-        UPDATE businesses
-        SET bg_color = ?, surface_color = ?, text_color = ?, hint_color = ?,
-            primary_color = ?, primary_text_color = ?, danger_color = ?,
-            success_color = ?, radius = ?
-        WHERE id = ?
-        """,
-        (
-            theme["bg_color"], theme["surface_color"], theme["text_color"], theme["hint_color"],
-            theme["primary_color"], theme["primary_text_color"], theme["danger_color"],
-            theme["success_color"], theme["radius"], business_id,
-        ),
+        f"UPDATE businesses SET {assignments} WHERE id = ?",
+        [theme[field] for field in THEME_FIELDS] + [business_id],
     )
     conn.commit()
+    conn.close()
+    if old_bg and old_bg != theme["bg_image_id"]:
+        delete_media_if_unused(business_id, old_bg)
+
+
+MAX_SAVED_THEMES = 20
+
+
+def get_saved_themes(business_id: int):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, name, data FROM saved_themes WHERE business_id = ? ORDER BY id", (business_id,)
+    ).fetchall()
+    conn.close()
+    return [{"id": r["id"], "name": r["name"], "theme": json.loads(r["data"])} for r in rows]
+
+
+def create_saved_theme(business_id: int, name: str, theme: dict):
+    conn = get_connection()
+    cur = conn.execute(
+        "INSERT INTO saved_themes (business_id, name, data, bg_image_id) VALUES (?, ?, ?, ?)",
+        (business_id, name, json.dumps({k: theme[k] for k in THEME_FIELDS}), theme.get("bg_image_id")),
+    )
+    conn.commit()
+    new_id = cur.lastrowid
+    conn.close()
+    return new_id
+
+
+def delete_saved_theme(business_id: int, theme_id: int):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT bg_image_id FROM saved_themes WHERE id = ? AND business_id = ?", (theme_id, business_id)
+    ).fetchone()
+    conn.execute("DELETE FROM saved_themes WHERE id = ? AND business_id = ?", (theme_id, business_id))
+    conn.commit()
+    conn.close()
+    if row and row["bg_image_id"]:
+        delete_media_if_unused(business_id, row["bg_image_id"])
+
+
+# ---------- Настройки бизнеса (логотип, сбор телефона) ----------
+
+def update_business_settings(business_id: int, collect_phone: str, privacy_url: str | None):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE businesses SET collect_phone = ?, privacy_url = ? WHERE id = ?",
+        (collect_phone, privacy_url, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_logo(business_id: int, media_id: int | None):
+    old = (get_business(business_id) or {}).get("logo_media_id")
+    conn = get_connection()
+    conn.execute("UPDATE businesses SET logo_media_id = ? WHERE id = ?", (media_id, business_id))
+    conn.commit()
+    conn.close()
+    if old and old != media_id:
+        delete_media_if_unused(business_id, old)
+
+
+# ---------- Картинки ----------
+
+MAX_MEDIA_PER_BUSINESS = 150
+
+
+def create_media(business_id: int, mime: str, data: bytes) -> int:
+    conn = get_connection()
+    cur = conn.execute("INSERT INTO media (business_id, mime, data) VALUES (?, ?, ?)", (business_id, mime, data))
+    conn.commit()
+    media_id = cur.lastrowid
+    conn.close()
+    return media_id
+
+
+def get_media(media_id: int):
+    conn = get_connection()
+    row = conn.execute("SELECT mime, data FROM media WHERE id = ?", (media_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def media_belongs(business_id: int, media_id: int) -> bool:
+    conn = get_connection()
+    row = conn.execute("SELECT 1 FROM media WHERE id = ? AND business_id = ?", (media_id, business_id)).fetchone()
+    conn.close()
+    return row is not None
+
+
+def count_media(business_id: int) -> int:
+    conn = get_connection()
+    n = conn.execute("SELECT COUNT(*) FROM media WHERE business_id = ?", (business_id,)).fetchone()[0]
+    conn.close()
+    return n
+
+
+def delete_orphan_media(older_than_hours: int = 24) -> int:
+    """Удаляет загруженные, но так и не применённые картинки (владелец загрузил фото и закрыл
+    форму). Свежие не трогаем — их могут прямо сейчас выбирать в форме."""
+    conn = get_connection()
+    cur = conn.execute(
+        """
+        DELETE FROM media
+        WHERE created_at < datetime('now', ?)
+          AND id NOT IN (
+              SELECT logo_media_id FROM businesses WHERE logo_media_id IS NOT NULL
+              UNION SELECT bg_image_id FROM businesses WHERE bg_image_id IS NOT NULL
+              UNION SELECT image_id FROM services WHERE image_id IS NOT NULL
+              UNION SELECT bg_image_id FROM saved_themes WHERE bg_image_id IS NOT NULL
+          )
+        """,
+        (f"-{int(older_than_hours)} hours",),
+    )
+    conn.commit()
+    deleted = cur.rowcount
+    conn.close()
+    return deleted
+
+
+def delete_media_if_unused(business_id: int, media_id: int):
+    """Удаляет картинку, если на неё больше никто не ссылается (логотип, фон, фото позиции,
+    сохранённый вариант оформления) — чтобы не копить забытые файлы в базе."""
+    conn = get_connection()
+    in_use = conn.execute(
+        """
+        SELECT 1 FROM businesses WHERE id = ? AND (logo_media_id = ? OR bg_image_id = ?)
+        UNION ALL SELECT 1 FROM services WHERE business_id = ? AND image_id = ?
+        UNION ALL SELECT 1 FROM saved_themes WHERE business_id = ? AND bg_image_id = ?
+        """,
+        (business_id, media_id, media_id, business_id, media_id, business_id, media_id),
+    ).fetchone()
+    if not in_use:
+        conn.execute("DELETE FROM media WHERE id = ? AND business_id = ?", (media_id, business_id))
+        conn.commit()
     conn.close()
 
 
@@ -293,15 +471,17 @@ def get_service(business_id: int, service_id: int):
     return dict(row) if row else None
 
 
-def create_service(business_id: int, name: str, price: int, duration_min: int, type_: str):
+def create_service(business_id: int, name: str, price: int, duration_min: int, type_: str,
+                   description: str | None = None, image_id: int | None = None):
     conn = get_connection()
     cur = conn.execute(
         "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM services WHERE business_id = ?", (business_id,)
     )
     next_order = cur.fetchone()[0]
     cur = conn.execute(
-        "INSERT INTO services (business_id, name, price, duration_min, type, sort_order) VALUES (?, ?, ?, ?, ?, ?)",
-        (business_id, name, price, duration_min if type_ == "slot" else 0, type_, next_order),
+        "INSERT INTO services (business_id, name, price, duration_min, type, sort_order, description, image_id)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (business_id, name, price, duration_min if type_ == "slot" else 0, type_, next_order, description, image_id),
     )
     conn.commit()
     new_id = cur.lastrowid
@@ -309,25 +489,33 @@ def create_service(business_id: int, name: str, price: int, duration_min: int, t
     return new_id
 
 
-def update_service(business_id: int, service_id: int, name: str, price: int, duration_min: int, type_: str, is_active: bool):
+def update_service(business_id: int, service_id: int, name: str, price: int, duration_min: int, type_: str, is_active: bool,
+                   description: str | None = None, image_id: int | None = None):
+    old = get_service(business_id, service_id)
     conn = get_connection()
     conn.execute(
         """
         UPDATE services
-        SET name = ?, price = ?, duration_min = ?, type = ?, is_active = ?
+        SET name = ?, price = ?, duration_min = ?, type = ?, is_active = ?, description = ?, image_id = ?
         WHERE id = ? AND business_id = ?
         """,
-        (name, price, duration_min if type_ == "slot" else 0, type_, 1 if is_active else 0, service_id, business_id),
+        (name, price, duration_min if type_ == "slot" else 0, type_, 1 if is_active else 0,
+         description, image_id, service_id, business_id),
     )
     conn.commit()
     conn.close()
+    if old and old["image_id"] and old["image_id"] != image_id:
+        delete_media_if_unused(business_id, old["image_id"])
 
 
 def delete_service(business_id: int, service_id: int):
+    old = get_service(business_id, service_id)
     conn = get_connection()
     conn.execute("DELETE FROM services WHERE id = ? AND business_id = ?", (service_id, business_id))
     conn.commit()
     conn.close()
+    if old and old["image_id"]:
+        delete_media_if_unused(business_id, old["image_id"])
 
 
 # ---------- Мастера ----------
@@ -508,18 +696,18 @@ def get_available_slots(business_id: int, service_id: int, date: str, master_id:
 # ---------- Заявки (bookings) ----------
 
 def create_booking(business_id, service_id, service_name, price, date, time, client_name, client_tg_id, quantity=1, comment=None,
-                   master_id=None, master_name=None):
+                   master_id=None, master_name=None, client_phone=None, consent_at=None):
     """service_name/price — снимок с позиции НА МОМЕНТ брони: последующее изменение
     цены или удаление позиции больше не переписывает историю заявок задним числом."""
     conn = get_connection()
     cur = conn.execute(
         """
         INSERT INTO bookings (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment,
-                              master_id, master_name)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              master_id, master_name, client_phone, consent_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment,
-         master_id, master_name),
+         master_id, master_name, client_phone, consent_at),
     )
     conn.commit()
     booking_id = cur.lastrowid
@@ -533,7 +721,7 @@ def create_booking(business_id, service_id, service_name, price, date, time, cli
 # join к services переключаемся только для старых записей, сделанных до этой правки.
 _BOOKING_SELECT = """
     SELECT b.id, b.date, b.time, b.client_name, b.client_tg_id, b.quantity,
-           b.comment, b.status, b.created_at, b.master_id, b.master_name,
+           b.comment, b.status, b.created_at, b.master_id, b.master_name, b.client_phone,
            COALESCE(b.service_name, s.name, 'Позиция удалена') as service_name,
            COALESCE(b.price, s.price, 0) as price,
            s.type as service_type

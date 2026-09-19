@@ -76,6 +76,8 @@ def owner_text(booking: dict) -> str:
         f"👤 {client}",
         f"💰 {booking['price'] * booking['quantity']} ₽",
     ]
+    if booking["client_phone"]:
+        lines.insert(4, f"📞 {_e(booking['client_phone'])}")
     if booking["master_name"]:
         lines.insert(3, f"🧑‍🎨 Мастер: {_e(booking['master_name'])}")
     if booking["comment"]:
