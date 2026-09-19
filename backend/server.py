@@ -8,8 +8,9 @@ from aiogram.types import Update
 
 import database
 import webhooks
-from config import SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, BOT_TOKEN
+from config import SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, BOT_TOKEN, DEV_SKIP_INITDATA_CHECK
 from bot import dp as tg_dp
+from telegram_auth import verify_init_data
 
 app = FastAPI(title="Booking Mini App API")
 
@@ -51,13 +52,15 @@ class ServiceRequest(BaseModel):
     duration_min: int = 0
     type: str = "slot"        # 'slot' или 'order'
     is_active: bool = True
-    owner_tg_id: int          # для проверки, что запрос от владельца
+    init_data: str = ""              # подпись Telegram WebApp — см. check_owner
+    owner_tg_id: int | None = None   # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
 
 
 class StatusRequest(BaseModel):
     business_id: int
     status: str               # 'new' | 'done' | 'cancelled'
-    owner_tg_id: int
+    init_data: str = ""
+    owner_tg_id: int | None = None
 
 
 class ThemeRequest(BaseModel):
@@ -71,7 +74,8 @@ class ThemeRequest(BaseModel):
     danger_color: str
     success_color: str
     radius: int
-    owner_tg_id: int
+    init_data: str = ""
+    owner_tg_id: int | None = None
 
 
 def resolve_business(business_id: int | None):
@@ -86,10 +90,21 @@ def resolve_business(business_id: int | None):
     return business
 
 
-def check_owner(business: dict, owner_tg_id: int):
-    """Простая проверка для прототипа: сверяем присланный tg_id с owner_tg_id бизнеса.
-    Для продакшена стоит валидировать initData от Telegram по HMAC, а не просто верить id."""
-    if not owner_tg_id or owner_tg_id != business["owner_tg_id"]:
+def check_owner(business: dict, init_data: str, owner_tg_id_fallback: int | None = None):
+    """Подтверждает, что запрос реально пришёл от владельца бизнеса.
+
+    Источник правды — подпись Telegram WebApp initData (HMAC под токеном ИМЕННО этого
+    бизнеса, см. telegram_auth.verify_init_data): её нельзя подделать, не зная токен бота.
+    Присланный клиентом owner_tg_id больше НИКОГДА не считается доказательством сам по
+    себе — только как дев-фолбэк вне настоящего Telegram, и только если явно включено
+    DEV_SKIP_INITDATA_CHECK (см. config.py; в проде должно быть выключено)."""
+    verified_user_id = verify_init_data(init_data, business["bot_token"])
+    if verified_user_id is None:
+        if DEV_SKIP_INITDATA_CHECK and owner_tg_id_fallback:
+            verified_user_id = owner_tg_id_fallback
+        else:
+            raise HTTPException(status_code=403, detail="Не удалось подтвердить владельца")
+    if verified_user_id != business["owner_tg_id"]:
         raise HTTPException(status_code=403, detail="Доступно только владельцу")
 
 
@@ -210,16 +225,16 @@ def api_book(booking: BookingRequest):
 # ---------- Админ-API (только для владельца, проверяется owner_tg_id) ----------
 
 @app.get("/api/admin/services")
-def admin_list_services(owner_tg_id: int, business_id: int):
+def admin_list_services(business_id: int, init_data: str = "", owner_tg_id: int | None = None):
     business = resolve_business(business_id)
-    check_owner(business, owner_tg_id)
+    check_owner(business, init_data, owner_tg_id)
     return database.get_services(business["id"], active_only=False)
 
 
 @app.post("/api/admin/services")
 def admin_create_service(payload: ServiceRequest):
     business = resolve_business(payload.business_id)
-    check_owner(business, payload.owner_tg_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
     new_id = database.create_service(business["id"], payload.name, payload.price, payload.duration_min, payload.type)
     return {"ok": True, "id": new_id}
 
@@ -227,7 +242,7 @@ def admin_create_service(payload: ServiceRequest):
 @app.put("/api/admin/services/{service_id}")
 def admin_update_service(service_id: int, payload: ServiceRequest):
     business = resolve_business(payload.business_id)
-    check_owner(business, payload.owner_tg_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
     if not database.get_service(business["id"], service_id):
         raise HTTPException(status_code=404, detail="Позиция не найдена")
     database.update_service(
@@ -237,9 +252,9 @@ def admin_update_service(service_id: int, payload: ServiceRequest):
 
 
 @app.delete("/api/admin/services/{service_id}")
-def admin_delete_service(service_id: int, owner_tg_id: int, business_id: int):
+def admin_delete_service(service_id: int, business_id: int, init_data: str = "", owner_tg_id: int | None = None):
     business = resolve_business(business_id)
-    check_owner(business, owner_tg_id)
+    check_owner(business, init_data, owner_tg_id)
     if not database.get_service(business["id"], service_id):
         raise HTTPException(status_code=404, detail="Позиция не найдена")
     database.delete_service(business["id"], service_id)
@@ -247,16 +262,16 @@ def admin_delete_service(service_id: int, owner_tg_id: int, business_id: int):
 
 
 @app.get("/api/admin/bookings")
-def admin_list_bookings(owner_tg_id: int, business_id: int, status: str | None = None):
+def admin_list_bookings(business_id: int, init_data: str = "", owner_tg_id: int | None = None, status: str | None = None):
     business = resolve_business(business_id)
-    check_owner(business, owner_tg_id)
+    check_owner(business, init_data, owner_tg_id)
     return database.get_all_bookings(business["id"], status=status)
 
 
 @app.patch("/api/admin/bookings/{booking_id}")
 def admin_update_booking(booking_id: int, payload: StatusRequest):
     business = resolve_business(payload.business_id)
-    check_owner(business, payload.owner_tg_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
     if payload.status not in ("new", "done", "cancelled"):
         raise HTTPException(status_code=400, detail="Неверный статус")
     database.update_booking_status(business["id"], booking_id, payload.status)
@@ -266,8 +281,8 @@ def admin_update_booking(booking_id: int, payload: StatusRequest):
 @app.put("/api/admin/theme")
 def admin_update_theme(payload: ThemeRequest):
     business = resolve_business(payload.business_id)
-    check_owner(business, payload.owner_tg_id)
-    database.update_theme(business["id"], payload.model_dump(exclude={"owner_tg_id", "business_id"}))
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    database.update_theme(business["id"], payload.model_dump(exclude={"owner_tg_id", "business_id", "init_data"}))
     return {"ok": True, "theme": database.get_theme(business["id"])}
 
 

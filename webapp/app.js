@@ -42,6 +42,11 @@ const businessIdParam = urlParams.get("business_id");
 
 const state = {
   businessId: businessIdParam ? Number(businessIdParam) : null,
+  // Сырая подписанная строка Telegram WebApp — сервер проверяет её HMAC-подписью
+  // конкретного бота (см. backend/telegram_auth.py), чтобы доверять owner-запросам.
+  // Вне настоящего Telegram её взять неоткуда — тогда админ-запросы будут отклонены,
+  // если только на сервере явно не включён DEV_SKIP_INITDATA_CHECK для локальной отладки.
+  initData: isRealTelegram ? tg.initData : "",
   config: { business_name: "Запись онлайн", owner_tg_id: 0 },
   isOwner: false,
   myTgId: null,
@@ -410,6 +415,7 @@ const statusLabels = { new: "Новая", done: "Выполнена", cancelled:
 
 async function loadAdminOrders() {
   const orders = await api(`/api/admin/bookings?${qs({
+    init_data: state.initData,
     owner_tg_id: state.myTgId,
     business_id: state.businessId,
     status: state.admin.statusFilter,
@@ -465,7 +471,7 @@ function escapeHtml(str) {
 async function updateOrderStatus(id, status) {
   await api(`/api/admin/bookings/${id}`, {
     method: "PATCH",
-    body: JSON.stringify({ status, owner_tg_id: state.myTgId, business_id: state.businessId }),
+    body: JSON.stringify({ status, init_data: state.initData, owner_tg_id: state.myTgId, business_id: state.businessId }),
   });
   loadAdminOrders();
 }
@@ -476,6 +482,7 @@ async function updateOrderStatus(id, status) {
 
 async function loadAdminServices() {
   state.admin.services = await api(`/api/admin/services?${qs({
+    init_data: state.initData,
     owner_tg_id: state.myTgId,
     business_id: state.businessId,
   })}`);
@@ -538,7 +545,7 @@ el("save-service-btn").addEventListener("click", async () => {
 
   const payload = {
     name, price, duration_min: duration, type,
-    is_active: true, owner_tg_id: state.myTgId, business_id: state.businessId,
+    is_active: true, init_data: state.initData, owner_tg_id: state.myTgId, business_id: state.businessId,
   };
 
   try {
@@ -564,6 +571,7 @@ el("delete-service-btn").addEventListener("click", async () => {
   if (!state.admin.editingServiceId) return;
   if (!confirm("Удалить эту позицию? Это действие необратимо.")) return;
   await api(`/api/admin/services/${state.admin.editingServiceId}?${qs({
+    init_data: state.initData,
     owner_tg_id: state.myTgId,
     business_id: state.businessId,
   })}`, {
@@ -629,7 +637,7 @@ function fillThemeForm(theme) {
 }
 
 function readThemeForm() {
-  const theme = { owner_tg_id: state.myTgId, business_id: state.businessId };
+  const theme = { init_data: state.initData, owner_tg_id: state.myTgId, business_id: state.businessId };
   Object.keys(THEME_VAR_MAP).forEach((key) => {
     theme[key] = el(`theme-${key}`).value;
   });
