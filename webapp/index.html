@@ -4,7 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Запись онлайн</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- Копия официального скрипта Telegram лежит у нас: с telegram.org он из РФ грузится нестабильно (до 15 с),
+       а скрипт блокирующий — приложение висело бы на белом экране. Обновление: скачать заново с
+       https://telegram.org/js/telegram-web-app.js и закоммитить. -->
+  <script src="telegram-web-app.js?v=1"></script>
   <link rel="stylesheet" href="style.css?v=8" />
 </head>
 <body>
