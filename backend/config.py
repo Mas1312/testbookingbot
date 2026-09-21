@@ -41,6 +41,11 @@ USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"
 # зная только твой Telegram ID (он не секретный).
 DEV_SKIP_INITDATA_CHECK = os.getenv("DEV_SKIP_INITDATA_CHECK", "false").lower() == "true"
 
+# Бизнес, чей бот служит «входом для владельцев»: только в нём работает /newbusiness (подключить
+# СВОЙ бизнес). В ботах клиентов команда не отвечает и нигде не рекламируется. По умолчанию — бизнес №1
+# (прод-бот). Когда заведём отдельный платформенный бот, сюда пойдёт его business_id.
+PLATFORM_BUSINESS_ID = int(os.getenv("PLATFORM_BUSINESS_ID", "1"))
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "booking.db")
 
 # Расписание по умолчанию для НОВОГО бизнеса (при создании через create_business) —

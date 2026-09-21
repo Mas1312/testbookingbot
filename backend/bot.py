@@ -7,10 +7,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
+import bot_setup
 import database
 import notifications
 import webhooks
-from config import BOT_TOKEN, WEBAPP_URL
+from config import BOT_TOKEN, PLATFORM_BUSINESS_ID, WEBAPP_URL
 
 logging.basicConfig(level=logging.INFO)
 
@@ -46,6 +47,9 @@ async def cmd_start(message: Message, business_id: int):
     )
     if business and message.from_user.id == business["owner_tg_id"]:
         text += "\n\n🔔 Вы владелец: новые заявки будут приходить сюда с кнопками «Подтвердить / Отклонить»."
+    if business_id == PLATFORM_BUSINESS_ID:
+        # Только у бота-«входа для владельцев»; в ботах клиентов такой подсказки нет.
+        text += "\n\nХотите такую же запись для своего бизнеса? Команда /newbusiness."
     await message.answer(text, reply_markup=keyboard)
 
 
@@ -172,10 +176,14 @@ class NewBusinessStates(StatesGroup):
 
 
 @dp.message(Command("newbusiness"))
-async def cmd_newbusiness(message: Message, state: FSMContext):
+async def cmd_newbusiness(message: Message, state: FSMContext, business_id: int):
+    if business_id != PLATFORM_BUSINESS_ID:
+        # Клиент чужого бота не должен случайно завести «свой бизнес» (и не должен видеть, что так можно).
+        await message.answer(bot_setup.NOT_PLATFORM_TEXT)
+        return
     await state.set_state(NewBusinessStates.waiting_name)
     await message.answer(
-        "Заведём новую запись для твоего бизнеса.\n\n"
+        "Заведём онлайн-запись для вашего бизнеса.\n\n"
         "Как он называется? Например: «Барбершоп у Ивана» или «Цветы у Насти».\n\n"
         "В любой момент можно отменить — /cancel"
     )
@@ -196,35 +204,34 @@ async def process_business_name(message: Message, state: FSMContext):
         await message.answer("Название не может быть пустым. Напиши текстом, или /cancel.")
         return
 
-    await state.update_data(business_name=name)
+    await state.update_data(business_name=name[:80])
     await state.set_state(NewBusinessStates.waiting_token)
-    await message.answer(
-        f"Принял: «{name}».\n\n"
-        "Теперь нужен токен твоего собственного Telegram-бота — именно через него твои "
-        "клиенты будут открывать запись.\n\n"
-        "1. Открой @BotFather\n"
-        "2. Отправь ему /newbot, придумай имя и username (должен заканчиваться на bot)\n"
-        "3. Он пришлёт токен вида 123456789:ABC... — перешли его сюда\n\n"
-        "Отмена — /cancel"
-    )
+    await message.answer(bot_setup.ask_token_text(name[:80]), disable_web_page_preview=True)
 
 
 @dp.message(NewBusinessStates.waiting_token)
 async def process_bot_token(message: Message, state: FSMContext):
     token = (message.text or "").strip()
 
+    if not bot_setup.looks_like_token(token):
+        await message.answer(bot_setup.NOT_A_TOKEN_TEXT)
+        return
+    # Токен — ключ от бота: убираем его из истории чата (боту это разрешено в личных чатах, сообщения
+    # моложе 48 часов). Не получилось — не страшно, идём дальше.
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
     if database.get_business_by_bot_token(token):
-        await message.answer("Этот бот уже подключён к системе — пришли токен другого бота, или /cancel.")
+        await message.answer(bot_setup.TOKEN_ALREADY_USED_TEXT)
         return
 
     candidate_bot = Bot(token=token)
     try:
         me = await candidate_bot.get_me()
     except Exception:
-        await message.answer(
-            "Не получилось проверить этот токен — похоже, он неверный или бот ещё не активирован. "
-            "Проверь и пришли ещё раз, или /cancel."
-        )
+        await message.answer(bot_setup.TOKEN_REJECTED_TEXT)
         return
     finally:
         await candidate_bot.session.close()
@@ -234,23 +241,20 @@ async def process_bot_token(message: Message, state: FSMContext):
     owner_tg_id = message.from_user.id
 
     business = database.create_business(owner_tg_id, business_name, token)
+    database.set_bot_username(business["id"], me.username)
     await state.clear()
     await webhooks.register_webhook(business)
+    await bot_setup.configure_business_bot(business)
 
-    await message.answer(
-        f"Готово! Бизнес «{business_name}» подключён к @{me.username}.\n\n"
-        f"Напиши этому боту /start и нажми «Записаться» — откроется твоя Mini App. "
-        "При первом входе она сама проведёт по настройке: выберешь, чем занимаешься, "
-        "добавишь услуги и рабочие часы — это пара минут. Потом во вкладке «Управление» "
-        "можно настроить оформление (доступно только тебе — вход по этому Telegram-аккаунту).\n\n"
-        "🔔 Важно: именно в этом боте нажми /start — иначе Telegram не даст ему присылать "
-        "тебе уведомления о новых заявках."
-    )
+    await message.answer(bot_setup.done_text(business_name, me.username), disable_web_page_preview=True)
 
 
 @dp.message()
-async def fallback(message: Message):
-    await message.answer("Нажми /start, чтобы открыть запись, или /newbusiness, чтобы завести свой бизнес.")
+async def fallback(message: Message, business_id: int):
+    if business_id == PLATFORM_BUSINESS_ID:
+        await message.answer("Нажмите /start, чтобы открыть запись, или /newbusiness, чтобы завести свой бизнес.")
+    else:
+        await message.answer(bot_setup.NOT_PLATFORM_TEXT)
 
 
 async def main():

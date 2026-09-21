@@ -256,6 +256,14 @@ def get_business(business_id: int):
     return dict(row) if row else None
 
 
+def set_bot_username(business_id: int, username: str | None):
+    """Username бота бизнеса (без @) — нужен для ссылки t.me/<username> и QR клиентам."""
+    conn = get_connection()
+    conn.execute("UPDATE businesses SET bot_username = ? WHERE id = ?", (username, business_id))
+    conn.commit()
+    conn.close()
+
+
 def get_business_by_bot_token(bot_token: str):
     conn = get_connection()
     row = conn.execute("SELECT * FROM businesses WHERE bot_token = ?", (bot_token,)).fetchone()
