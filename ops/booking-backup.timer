@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the off-site database backup every night
+
+[Timer]
+OnCalendar=*-*-* 03:40:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

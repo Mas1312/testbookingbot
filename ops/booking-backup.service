@@ -1,0 +1,9 @@
+[Unit]
+Description=Encrypted off-site backup of the booking database (S3)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=booking
+ExecStart=/usr/bin/python3 /opt/tg-booking-bot/ops/backup_offsite.py
+TimeoutStartSec=900
