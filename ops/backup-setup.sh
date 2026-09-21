@@ -31,6 +31,7 @@ secret_access_key = $SECRET_KEY
 endpoint = $ENDPOINT
 region = $REGION
 force_path_style = true
+no_check_bucket = true
 EOF
 printf 'BACKUP_BUCKET=%s\nRETENTION_DAYS=30\n' "$BUCKET" > "$CONF/backup.conf"
 
