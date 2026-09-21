@@ -429,11 +429,7 @@ def api_book(booking: BookingRequest, background_tasks: BackgroundTasks):
     if service["type"] == "slot":
         if not booking.date or not booking.time:
             raise HTTPException(status_code=400, detail="Для этой позиции нужно выбрать дату и время")
-        free_slots = database.get_available_slots(
-            business["id"], booking.service_id, booking.date, master["id"] if master else None
-        )
-        if booking.time not in free_slots:
-            raise HTTPException(status_code=409, detail="Это время уже занято, выберите другое")
+        # Сама проверка «время свободно» — внутри create_booking_checked, в одной транзакции со вставкой.
         date, time = booking.date, booking.time
     else:
         # Позиция без расписания — дата/время не нужны, это разовый заказ
@@ -447,13 +443,16 @@ def api_book(booking: BookingRequest, background_tasks: BackgroundTasks):
 
     client_phone, consent_at = resolve_phone(business, booking)
 
-    booking_id = database.create_booking(
+    create = database.create_booking_checked if service["type"] == "slot" else database.create_booking
+    booking_id = create(
         business["id"], booking.service_id, service["name"], service["price"], date, time,
         booking.client_name, client_tg_id,
         quantity=max(1, booking.quantity), comment=booking.comment,
         master_id=master["id"] if master else None, master_name=master["name"] if master else None,
         client_phone=client_phone, consent_at=consent_at,
     )
+    if booking_id is None:
+        raise HTTPException(status_code=409, detail="Это время уже занято, выберите другое")
     background_tasks.add_task(notifications.notify_new_booking, business["id"], booking_id)
     return {
         "ok": True,

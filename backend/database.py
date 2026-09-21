@@ -650,21 +650,27 @@ def _slot_overlaps_busy(slot_start_minutes, slot_duration, busy_ranges):
     return False
 
 
-def get_available_slots(business_id: int, service_id: int, date: str, master_id: int | None = None):
+def get_available_slots(business_id: int, service_id: int, date: str, master_id: int | None = None, conn=None):
     """Возвращает список свободных времён (HH:MM) для позиции на дату, с учётом её
     длительности, уже существующих записей и расписания бизнеса (рабочие часы, шаг
     сетки — свои у каждого бизнеса) — время «сейчас» берётся в часовом поясе бизнеса.
 
     master_id — календарь конкретного мастера: заняты только его записи (и старые записи
     без мастера — они не привязаны ни к кому, поэтому блокируют всех). Без master_id
-    (бизнес без мастеров) календарь общий."""
+    (бизнес без мастеров) календарь общий.
+
+    conn — уже открытое соединение: чтобы create_booking_checked проверял слот в той же
+    транзакции, в которой потом вставит запись (иначе два одновременных запроса оба
+    увидят слот свободным)."""
     service = get_service(business_id, service_id)
     if not service or service["type"] != "slot":
         return []
     duration = service["duration_min"]
     schedule = get_schedule(business_id)
 
-    conn = get_connection()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
     busy_query = """
         SELECT b.time, s.duration_min
         FROM bookings b
@@ -676,7 +682,8 @@ def get_available_slots(business_id: int, service_id: int, date: str, master_id:
         busy_query += " AND (b.master_id = ? OR b.master_id IS NULL)"
         busy_params.append(master_id)
     busy_rows = conn.execute(busy_query, busy_params).fetchall()
-    conn.close()
+    if own_conn:
+        conn.close()
 
     busy_ranges = []
     for row in busy_rows:
@@ -722,6 +729,40 @@ def create_booking(business_id, service_id, service_name, price, date, time, cli
     booking_id = cur.lastrowid
     conn.close()
     return booking_id
+
+
+def create_booking_checked(business_id, service_id, service_name, price, date, time, client_name, client_tg_id,
+                           quantity=1, comment=None, master_id=None, master_name=None,
+                           client_phone=None, consent_at=None):
+    """Запись на слот: проверка «время свободно» и вставка — в ОДНОЙ транзакции с блокировкой
+    на запись (BEGIN IMMEDIATE). Без этого два клиента, нажавших «Записаться» на одно время
+    одновременно, оба проходили проверку и получали одну и ту же запись.
+    Возвращает id заявки или None, если время уже занято."""
+    conn = get_connection()
+    conn.isolation_level = None  # транзакцией управляем вручную
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if time not in get_available_slots(business_id, service_id, date, master_id, conn=conn):
+            conn.execute("ROLLBACK")
+            return None
+        cur = conn.execute(
+            """
+            INSERT INTO bookings (business_id, service_id, service_name, price, client_name, client_tg_id, date, time,
+                                  quantity, comment, master_id, master_name, client_phone, consent_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment,
+             master_id, master_name, client_phone, consent_at),
+        )
+        booking_id = cur.lastrowid
+        conn.execute("COMMIT")
+        return booking_id
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
 
 
 # LEFT JOIN, а не JOIN: если позицию потом удалили, её прошлые заявки не должны

@@ -6,11 +6,13 @@
 
 Любая ошибка отправки (владелец не нажимал /start в своём боте, клиент заблокировал бота и т.п.)
 только логируется: заявка от этого не должна ни теряться, ни падать с 500."""
+import asyncio
 import html
 import logging
 from datetime import date as date_cls, datetime, timedelta, timezone as dt_timezone
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter, TelegramServerError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import database
@@ -131,13 +133,34 @@ def client_confirm_cancel_keyboard(booking_id: int) -> InlineKeyboardMarkup:
     ]])
 
 
+SEND_ATTEMPTS = 3
+SEND_RETRY_DELAY = 1.0  # секунд; растёт по ходу попыток (1, 2)
+
+
 async def _safe_send(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
-    try:
-        await bot.send_message(chat_id, text, parse_mode="HTML", **kwargs)
-        return True
-    except Exception as exc:
-        logging.warning("Не удалось отправить сообщение chat_id=%s: %s", chat_id, exc)
-        return False
+    """Отправка с повторами только при временных сбоях: Telegram с сервера отвечает не с
+    первого раза (сеть, лимиты, 5xx). Окончательные отказы (клиент заблокировал бота, чат
+    не найден, битая разметка) не повторяем — от этого ничего не изменится."""
+    for attempt in range(1, SEND_ATTEMPTS + 1):
+        try:
+            await bot.send_message(chat_id, text, parse_mode="HTML", **kwargs)
+            return True
+        except TelegramRetryAfter as exc:
+            delay = min(float(exc.retry_after), 10.0)
+            error = exc
+        except (TelegramNetworkError, TelegramServerError, asyncio.TimeoutError) as exc:
+            delay = SEND_RETRY_DELAY * attempt
+            error = exc
+        except Exception as exc:
+            logging.warning("Не удалось отправить сообщение chat_id=%s: %s", chat_id, exc)
+            return False
+        if attempt == SEND_ATTEMPTS:
+            logging.warning("Не удалось отправить сообщение chat_id=%s после %s попыток: %s",
+                            chat_id, SEND_ATTEMPTS, error)
+            return False
+        logging.info("Повтор отправки chat_id=%s (попытка %s): %s", chat_id, attempt, error)
+        await asyncio.sleep(delay)
+    return False
 
 
 async def notify_new_booking(business_id: int, booking_id: int):
