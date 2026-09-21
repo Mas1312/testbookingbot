@@ -8,7 +8,7 @@
        а скрипт блокирующий — приложение висело бы на белом экране. Обновление: скачать заново с
        https://telegram.org/js/telegram-web-app.js и закоммитить. -->
   <script src="telegram-web-app.js?v=1"></script>
-  <link rel="stylesheet" href="style.css?v=8" />
+  <link rel="stylesheet" href="style.css?v=9" />
 </head>
 <body>
   <!-- Набор иконок (контурные, 24×24): подставляются через <svg class="icon"><use href="#i-имя"/></svg> -->
@@ -201,6 +201,17 @@
           <div class="success-badge"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></div>
           <h1 class="center">Запись настроена</h1>
           <p class="hint center">Проверьте услуги во вкладке «Позиции»: добавьте фото, измените цены. Чтобы увидеть запись глазами клиента, переключитесь на «Запись» вверху.</p>
+
+          <div class="field-block share-block" id="wizard-share-block">
+            <label for="wizard-share-link">Ссылка для клиентов</label>
+            <div class="share-row">
+              <input id="wizard-share-link" type="text" readonly placeholder="Загрузка…" />
+              <button type="button" id="wizard-share-copy-btn" class="share-copy" disabled>Скопировать</button>
+            </div>
+            <button type="button" id="wizard-share-send-btn" class="add-btn" disabled>Отправить QR-код в чат</button>
+            <p class="hint">Отправьте её клиентам или вставьте в Instagram и 2ГИС. QR-код для печати всегда есть в «Настройках».</p>
+          </div>
+
           <button id="wizard-finish-btn" class="primary-btn">Перейти к позициям</button>
         </div>
       </section>
@@ -462,6 +473,19 @@
       <!-- Настройки: сбор телефона и политика -->
       <section id="admin-screen-settings" class="screen hidden">
         <h1>Настройки</h1>
+
+        <div class="field-block share-block" id="share-block">
+          <label for="share-link">Ссылка для клиентов</label>
+          <div class="share-row">
+            <input id="share-link" type="text" readonly placeholder="Загрузка…" />
+            <button type="button" id="share-copy-btn" class="share-copy" disabled>Скопировать</button>
+          </div>
+          <img id="share-qr" class="share-qr hidden" alt="QR-код ссылки на бота" width="220" height="220" />
+          <button type="button" id="share-send-btn" class="add-btn" disabled>Отправить QR-код в чат</button>
+          <p class="hint">Вставьте ссылку в Instagram, 2ГИС, мессенджеры. QR-код можно распечатать и поставить у стойки: клиент наведёт камеру и сразу попадёт на запись.</p>
+          <button type="button" id="bot-refresh-btn" class="link-btn neutral">Обновить настройки бота</button>
+        </div>
+
         <p class="hint theme-intro">Персональные данные клиентов — ответственность владельца бизнеса. Собирайте только то, что нужно.</p>
 
         <div class="field-block">
@@ -557,6 +581,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

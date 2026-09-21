@@ -1276,3 +1276,46 @@ p.center {
     grid-template-columns: 1fr;
   }
 }
+
+/* ===== Ссылка и QR для клиентов ===== */
+.share-block .share-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.share-block .share-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.share-copy {
+  flex-shrink: 0;
+  padding: 0 16px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--primary-fill);
+  color: var(--primary-text);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.share-copy:disabled,
+.share-block .add-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.share-qr {
+  display: block;
+  margin: 4px auto 14px;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  padding: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.share-block .add-btn {
+  margin-bottom: 10px;
+}

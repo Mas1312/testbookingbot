@@ -774,6 +774,7 @@ el("admin-tab-settings").addEventListener("click", () => {
   setActiveAdminTab("admin-tab-settings");
   showAdminScreen("settings");
   loadSettings();
+  loadShare("share");
 });
 
 el("admin-tab-theme").addEventListener("click", () => {
@@ -1420,6 +1421,7 @@ function showWizardStep(step) {
   el("wizard-step-label").textContent = `Шаг ${step} из 3`;
   showAdminScreen("wizard");
   if (step === 2) fillWizardSchedule();
+  if (step === 3) loadShare("wizard-share");
   window.scrollTo(0, 0);
 }
 
@@ -1541,6 +1543,90 @@ async function loadSettings() {
   el("settings-collect-phone").value = settings.collect_phone;
   el("settings-privacy-url").value = settings.privacy_url || "";
 }
+
+// ---- Ссылка и QR для клиентов (вкладка «Настройки» и последний шаг мастера) ----
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) { /* в некоторых WebView буфер недоступен — пробуем запасной путь */ }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  area.remove();
+  return ok;
+}
+
+async function loadShare(prefix) {
+  const linkInput = el(`${prefix}-link`);
+  const copyBtn = el(`${prefix}-copy-btn`);
+  const sendBtn = el(`${prefix}-send-btn`);
+  const qr = document.getElementById(`${prefix}-qr`);
+  const fail = () => { linkInput.value = ""; linkInput.placeholder = "Не удалось получить ссылку"; };
+  try {
+    const data = await api(`/api/admin/share?${qs(adminAuth())}`);
+    if (!data.link) { fail(); return; }
+    linkInput.value = data.link;
+    copyBtn.disabled = false;
+    sendBtn.disabled = false;
+    // Адрес картинки строит сервер; перед подстановкой в src проверяем формат (как safeMediaUrl).
+    if (qr && /^\/api\/qr\?business_id=\d+$/.test(data.qr_url || "")) {
+      qr.src = API_BASE + data.qr_url;
+      qr.classList.remove("hidden");
+    }
+  } catch (e) {
+    fail();
+  }
+}
+
+function bindShare(prefix) {
+  el(`${prefix}-copy-btn`).addEventListener("click", async () => {
+    const input = el(`${prefix}-link`);
+    const ok = await copyText(input.value);
+    if (!ok) {
+      // Буфер недоступен — выделяем ссылку целиком, чтобы её можно было скопировать долгим нажатием.
+      input.focus();
+      input.select();
+      input.setSelectionRange(0, input.value.length);
+    }
+    toast(ok ? "Ссылка скопирована" : "Не получилось скопировать сразу: ссылка выделена, скопируйте её вручную");
+  });
+  el(`${prefix}-send-btn`).addEventListener("click", async () => {
+    const btn = el(`${prefix}-send-btn`);
+    btn.disabled = true;
+    try {
+      await api("/api/admin/share/send", { method: "POST", body: JSON.stringify(adminAuth()) });
+      toast("Отправили QR-код и ссылку вам в чат с ботом");
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+bindShare("share");
+bindShare("wizard-share");
+
+el("bot-refresh-btn").addEventListener("click", async () => {
+  const btn = el("bot-refresh-btn");
+  btn.disabled = true;
+  try {
+    const res = await api("/api/admin/bot/refresh", { method: "POST", body: JSON.stringify(adminAuth()) });
+    toast(res.ok ? "Настройки бота обновлены" : "Часть настроек бота обновить не удалось, попробуйте позже");
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 el("save-settings-btn").addEventListener("click", async () => {
   const payload = {

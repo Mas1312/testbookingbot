@@ -11,13 +11,17 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from aiogram.types import Update
+from aiogram.exceptions import TelegramForbiddenError
+from aiogram.types import BufferedInputFile, Update
 
+import bot_setup
 import database
 import notifications
+import share
 import webhooks
 from templates import NICHE_TEMPLATES, TEMPLATES_BY_ID
-from config import SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, BOT_TOKEN, DEV_SKIP_INITDATA_CHECK
+from config import (SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, BOT_TOKEN, DEV_SKIP_INITDATA_CHECK,
+                    PLATFORM_BUSINESS_ID)
 from bot import dp as tg_dp
 from telegram_auth import verify_init_data
 
@@ -148,6 +152,12 @@ class MasterRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     service_ids: list[int] = []      # пусто = мастер ведёт все позиции по расписанию
     is_active: bool = True
+    init_data: str = ""
+    owner_tg_id: int | None = None
+
+
+class OwnerActionRequest(BaseModel):
+    business_id: int
     init_data: str = ""
     owner_tg_id: int | None = None
 
@@ -781,6 +791,67 @@ def admin_update_settings(payload: BusinessSettingsRequest):
         raise HTTPException(status_code=400, detail="Ссылка на политику должна начинаться с http:// или https://")
     database.update_business_settings(business["id"], payload.collect_phone, privacy_url)
     return {"ok": True}
+
+
+@app.get("/api/admin/share")
+async def admin_share(business_id: int, init_data: str = "", owner_tg_id: int | None = None):
+    """Ссылка на бота бизнеса и адрес QR-картинки — для блока «Ссылка для клиентов»."""
+    business = resolve_business(business_id)
+    check_owner(business, init_data, owner_tg_id)
+    username = await share.ensure_bot_username(business)
+    if not username:
+        return {"link": None, "bot_username": None, "qr_url": None}
+    return {
+        "link": share.link_for(username),
+        "bot_username": username,
+        "qr_url": f"/api/qr?business_id={business['id']}",
+    }
+
+
+@app.get("/api/qr")
+async def api_qr(business_id: int):
+    """QR-код ссылки на бота. Публичный: сама ссылка t.me/<бот> не секрет, её видят все клиенты."""
+    business = resolve_business(business_id)
+    username = await share.ensure_bot_username(business)
+    if not username:
+        raise HTTPException(status_code=404, detail="Не удалось определить бота")
+    return Response(
+        content=share.make_qr_png(share.link_for(username)), media_type="image/png",
+        headers={"Cache-Control": "public, max-age=600", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.post("/api/admin/share/send")
+async def admin_share_send(payload: OwnerActionRequest):
+    """Присылает владельцу в чат QR-код и ссылку — удобно переслать или распечатать с телефона."""
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    username = await share.ensure_bot_username(business)
+    if not username:
+        raise HTTPException(status_code=502, detail="Не удалось связаться с Telegram, попробуйте позже")
+    link = share.link_for(username)
+    try:
+        await notifications.get_bot(business).send_photo(
+            business["owner_tg_id"],
+            BufferedInputFile(share.make_qr_png(link), filename="qr.png"),
+            caption=share.share_caption(business["name"], link),
+        )
+    except TelegramForbiddenError:
+        raise HTTPException(status_code=409, detail="Откройте своего бота и нажмите /start, затем повторите")
+    except Exception:
+        logging.exception("Не удалось отправить QR владельцу business_id=%s", business["id"])
+        raise HTTPException(status_code=502, detail="Не удалось отправить, попробуйте позже")
+    return {"ok": True}
+
+
+@app.post("/api/admin/bot/refresh")
+async def admin_bot_refresh(payload: OwnerActionRequest):
+    """Заново выставляет у бота меню-кнопку, команды и описание (для бизнесов, заведённых до автонастройки)."""
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    failed = await bot_setup.configure_business_bot(business, platform=business["id"] == PLATFORM_BUSINESS_ID)
+    await share.ensure_bot_username(business)
+    return {"ok": not failed, "failed": failed}
 
 
 @app.get("/api/admin/schedule")
