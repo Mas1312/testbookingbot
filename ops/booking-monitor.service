@@ -1,0 +1,12 @@
+[Unit]
+Description=Reachability monitor for the booking Mini App (checks from Russian nodes, alerts the owner)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=booking
+Environment=MONITOR_STATE=/var/lib/booking-monitor/state.json
+StateDirectory=booking-monitor
+ExecStart=/usr/bin/python3 /opt/tg-booking-bot/ops/monitor_reachability.py
+# check-host иногда отвечает до ~75 с; с запасом
+TimeoutStartSec=150
