@@ -8,7 +8,7 @@ import logging
 import re
 
 from aiogram import Bot
-from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
+from aiogram.types import BotCommand, MenuButtonCommands, MenuButtonWebApp, WebAppInfo
 
 from config import WEBAPP_URL
 
@@ -43,30 +43,50 @@ def description(name: str) -> str:
     return text[:512]
 
 
+def platform_short_description(name: str) -> str:
+    return "Конструктор Telegram-записи. /newbusiness — подключить бизнес"[:120]
+
+
+def platform_description(name: str) -> str:
+    """{name} — это TeleSlot сам по себе: у него нет клиентской записи, только подключение бизнесов."""
+    text = (
+        f"{name} — конструктор онлайн-записи в Telegram.\n\n"
+        "Команда /newbusiness подключит ваш бизнес: за пару минут появится свой бот с записью, "
+        "приёмом заявок в чат и напоминаниями клиентам."
+    )
+    return text[:512]
+
+
 def commands(platform: bool) -> list[BotCommand]:
-    result = [
+    if platform:
+        # У TeleSlot самого нет записи и «Моих записей» — только подключение бизнесов.
+        return [
+            BotCommand(command="start", description="Что такое TeleSlot"),
+            BotCommand(command="newbusiness", description="Подключить бизнес"),
+        ]
+    return [
         BotCommand(command="start", description="Записаться"),
         BotCommand(command="my", description="Мои записи"),
     ]
-    if platform:
-        result.append(BotCommand(command="newbusiness", description="Подключить свой бизнес"))
-    return result
 
 
 async def configure_bot(bot: Bot, business: dict, platform: bool = False) -> list[str]:
-    """Выставляет меню-кнопку, команды и описания. Возвращает названия шагов, которые не удались."""
+    """Выставляет меню-кнопку, команды и описания. Возвращает названия шагов, которые не удались.
+
+    Платформенный бот (TeleSlot) не показывает Mini App записи — у него нет ни услуг, ни клиентов,
+    только /newbusiness, поэтому меню-кнопка — обычный список команд, а не WebApp."""
     failed = []
+    menu_button = (
+        MenuButtonCommands() if platform
+        else MenuButtonWebApp(text=MENU_BUTTON_TEXT, web_app=WebAppInfo(url=mini_app_url(business["id"])))
+    )
+    desc = platform_description(business["name"]) if platform else description(business["name"])
+    short_desc = platform_short_description(business["name"]) if platform else short_description(business["name"])
     steps = {
-        "menu_button": lambda: bot.set_chat_menu_button(
-            menu_button=MenuButtonWebApp(
-                text=MENU_BUTTON_TEXT, web_app=WebAppInfo(url=mini_app_url(business["id"]))
-            )
-        ),
+        "menu_button": lambda: bot.set_chat_menu_button(menu_button=menu_button),
         "commands": lambda: bot.set_my_commands(commands(platform)),
-        "description": lambda: bot.set_my_description(description=description(business["name"])),
-        "short_description": lambda: bot.set_my_short_description(
-            short_description=short_description(business["name"])
-        ),
+        "description": lambda: bot.set_my_description(description=desc),
+        "short_description": lambda: bot.set_my_short_description(short_description=short_desc),
     }
     for name, call in steps.items():
         try:
@@ -130,3 +150,9 @@ def done_text(name: str, username: str) -> str:
 
 
 NOT_PLATFORM_TEXT = "Нажмите /start, чтобы записаться, или /my, чтобы посмотреть свои записи."
+
+PLATFORM_START_TEXT = (
+    "TeleSlot — конструктор онлайн-записи в Telegram.\n\n"
+    "Подключите свой бизнес: получите отдельного бота с записью, приёмом заявок в чат и "
+    "напоминаниями клиентам — без установки приложений."
+)

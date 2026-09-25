@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 import bot as bot_module  # noqa: E402
 import bot_setup  # noqa: E402
+from aiogram.types import MenuButtonCommands, MenuButtonWebApp  # noqa: E402
 from config import PLATFORM_BUSINESS_ID  # noqa: E402
 
 VALID_TOKEN = "123456789:AAEhBOweik6ad9r_QXMENQjcrTu-Ge1S3lM"
@@ -40,9 +41,12 @@ class FakeMessage:
     def __init__(self, text=""):
         self.text = text
         self.answers = []
+        self.markups = []
 
     async def answer(self, text, **kwargs):
         self.answers.append(text)
+        if "reply_markup" in kwargs and kwargs["reply_markup"] is not None:
+            self.markups.append(kwargs["reply_markup"])
 
 
 class FakeState:
@@ -84,15 +88,66 @@ class ConfigureBotTest(unittest.TestCase):
         self.assertIn("commands", bot.calls)
         self.assertIn("short_description", bot.calls)
 
-    def test_platform_gets_newbusiness_command(self):
-        names = [c.command for c in bot_setup.commands(platform=True)]
-        self.assertIn("newbusiness", names)
-        self.assertNotIn("newbusiness", [c.command for c in bot_setup.commands(platform=False)])
+    def test_platform_gets_newbusiness_command_and_no_my(self):
+        platform_names = [c.command for c in bot_setup.commands(platform=True)]
+        client_names = [c.command for c in bot_setup.commands(platform=False)]
+        self.assertIn("newbusiness", platform_names)
+        self.assertNotIn("my", platform_names)  # у TeleSlot самого нет записей
+        self.assertNotIn("newbusiness", client_names)
+        self.assertIn("my", client_names)
 
     def test_telegram_length_limits(self):
         long_name = "Х" * 200
         self.assertLessEqual(len(bot_setup.short_description(long_name)), 120)
         self.assertLessEqual(len(bot_setup.description(long_name)), 512)
+        self.assertLessEqual(len(bot_setup.platform_short_description(long_name)), 120)
+        self.assertLessEqual(len(bot_setup.platform_description(long_name)), 512)
+
+    def test_platform_menu_button_is_not_a_mini_app(self):
+        """TeleSlot не должен предлагать открыть Mini App записи — у него нет ни услуг, ни клиентов."""
+        bot = FakeBot()
+        asyncio.run(bot_setup.configure_bot(bot, BUSINESS, platform=True))
+        menu = bot.calls["menu_button"]["menu_button"]
+        self.assertIsInstance(menu, MenuButtonCommands)
+        self.assertNotIsInstance(menu, MenuButtonWebApp)
+
+
+class FakeCallback:
+    def __init__(self, message):
+        self.message = message
+        self.answered = False
+
+    async def answer(self, *args, **kwargs):
+        self.answered = True
+
+
+class PlatformStartTest(unittest.TestCase):
+    """TeleSlot сам по себе — не бот записи: /start у него не должен предлагать Mini App клиента."""
+
+    def test_platform_start_has_no_booking_button(self):
+        message = FakeMessage()
+        asyncio.run(bot_module.cmd_start(message, business_id=PLATFORM_BUSINESS_ID))
+        self.assertEqual(message.answers, [bot_setup.PLATFORM_START_TEXT])
+        self.assertEqual(len(message.markups), 1)
+        button = message.markups[0].inline_keyboard[0][0]
+        self.assertEqual(button.callback_data, "start_newbusiness")
+        self.assertIsNone(button.web_app)
+
+    def test_start_newbusiness_button_starts_dialog_only_on_platform(self):
+        message, state = FakeMessage(), FakeState()
+        callback = FakeCallback(message)
+        asyncio.run(bot_module.on_start_newbusiness_button(callback, state, business_id=PLATFORM_BUSINESS_ID))
+        self.assertTrue(callback.answered)
+        self.assertIsNotNone(state.state)
+        self.assertTrue(message.answers)
+
+    def test_start_newbusiness_button_ignored_on_client_bot(self):
+        message, state = FakeMessage(), FakeState()
+        callback = FakeCallback(message)
+        asyncio.run(bot_module.on_start_newbusiness_button(callback, state, business_id=PLATFORM_BUSINESS_ID + 1))
+        self.assertTrue(callback.answered)
+        self.assertIsNone(state.state)
+        self.assertEqual(message.answers, [])
 
 
 class PlatformGatingTest(unittest.TestCase):

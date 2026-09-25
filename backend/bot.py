@@ -32,6 +32,18 @@ bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, business_id: int):
+    if business_id == PLATFORM_BUSINESS_ID:
+        # TeleSlot сам по себе не бот записи — это инструмент для подключения и настройки
+        # СВОИХ ботов, поэтому у него нет кнопки «Записаться» и Mini App клиента: только
+        # приглашение начать /newbusiness. У бизнес-ботов ниже — обычный клиентский /start.
+        await message.answer(
+            bot_setup.PLATFORM_START_TEXT,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Подключить бизнес", callback_data="start_newbusiness")]
+            ]),
+        )
+        return
+
     business = database.get_business(business_id)
     business_name = business["name"] if business else "Записи"
     webapp_url = f"{WEBAPP_URL}/?business_id={business_id}"
@@ -47,9 +59,6 @@ async def cmd_start(message: Message, business_id: int):
     )
     if business and message.from_user.id == business["owner_tg_id"]:
         text += "\n\n🔔 Вы владелец: новые заявки будут приходить сюда с кнопками «Подтвердить / Отклонить»."
-    if business_id == PLATFORM_BUSINESS_ID:
-        # Только у бота-«входа для владельцев»; в ботах клиентов такой подсказки нет.
-        text += "\n\nХотите такую же запись для своего бизнеса? Команда /newbusiness."
     await message.answer(text, reply_markup=keyboard)
 
 
@@ -175,18 +184,34 @@ class NewBusinessStates(StatesGroup):
     waiting_token = State()
 
 
+async def start_newbusiness_dialog(answer, state: FSMContext):
+    """Общее начало диалога подключения бизнеса — вызывается и из команды /newbusiness,
+    и из кнопки «Подключить бизнес» под /start в TeleSlot. answer — message.answer или
+    callback.message.answer (сигнатура одна и та же)."""
+    await state.set_state(NewBusinessStates.waiting_name)
+    await answer(
+        "Заведём онлайн-запись для вашего бизнеса.\n\n"
+        "Как он называется? Например: «Барбершоп у Ивана» или «Цветы у Насти».\n\n"
+        "В любой момент можно отменить — /cancel"
+    )
+
+
 @dp.message(Command("newbusiness"))
 async def cmd_newbusiness(message: Message, state: FSMContext, business_id: int):
     if business_id != PLATFORM_BUSINESS_ID:
         # Клиент чужого бота не должен случайно завести «свой бизнес» (и не должен видеть, что так можно).
         await message.answer(bot_setup.NOT_PLATFORM_TEXT)
         return
-    await state.set_state(NewBusinessStates.waiting_name)
-    await message.answer(
-        "Заведём онлайн-запись для вашего бизнеса.\n\n"
-        "Как он называется? Например: «Барбершоп у Ивана» или «Цветы у Насти».\n\n"
-        "В любой момент можно отменить — /cancel"
-    )
+    await start_newbusiness_dialog(message.answer, state)
+
+
+@dp.callback_query(F.data == "start_newbusiness")
+async def on_start_newbusiness_button(callback: CallbackQuery, state: FSMContext, business_id: int):
+    """Кнопка «Подключить бизнес» под /start в TeleSlot — тот же диалог, что и /newbusiness."""
+    await callback.answer()
+    if business_id != PLATFORM_BUSINESS_ID or not callback.message:
+        return
+    await start_newbusiness_dialog(callback.message.answer, state)
 
 
 @dp.message(Command("cancel"))
