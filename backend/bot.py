@@ -38,9 +38,10 @@ async def cmd_start(message: Message, business_id: int):
         # приглашение начать /newbusiness. У бизнес-ботов ниже — обычный клиентский /start.
         await message.answer(
             bot_setup.PLATFORM_START_TEXT,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Подключить бизнес", callback_data="start_newbusiness")]
-            ]),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="Подключить бизнес", callback_data="start_newbusiness"),
+                InlineKeyboardButton(text="Тариф", callback_data="show_price"),
+            ]]),
         )
         return
 
@@ -212,6 +213,37 @@ async def on_start_newbusiness_button(callback: CallbackQuery, state: FSMContext
     if business_id != PLATFORM_BUSINESS_ID or not callback.message:
         return
     await start_newbusiness_dialog(callback.message.answer, state)
+
+
+PRICE_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[[
+    InlineKeyboardButton(text="Оформить подписку", callback_data="subscribe_request")
+]])
+
+
+@dp.message(Command("price"))
+async def cmd_price(message: Message, business_id: int):
+    if business_id != PLATFORM_BUSINESS_ID:
+        await message.answer(bot_setup.NOT_PLATFORM_TEXT)
+        return
+    await message.answer(bot_setup.PLATFORM_PRICE_TEXT, reply_markup=PRICE_KEYBOARD)
+
+
+@dp.callback_query(F.data == "show_price")
+async def on_show_price_button(callback: CallbackQuery, business_id: int):
+    await callback.answer()
+    if business_id != PLATFORM_BUSINESS_ID or not callback.message:
+        return
+    await callback.message.answer(bot_setup.PLATFORM_PRICE_TEXT, reply_markup=PRICE_KEYBOARD)
+
+
+@dp.callback_query(F.data == "subscribe_request")
+async def on_subscribe_request_button(callback: CallbackQuery, business_id: int):
+    """Пока оплата ручная (см. bot_setup.SUPPORT_CONTACT): кнопка не списывает деньги сама,
+    а направляет в поддержку, которая пришлёт реквизиты и чек после перевода."""
+    await callback.answer()
+    if business_id != PLATFORM_BUSINESS_ID or not callback.message:
+        return
+    await callback.message.answer(bot_setup.PLATFORM_SUBSCRIBE_REPLY_TEXT)
 
 
 @dp.message(Command("cancel"))

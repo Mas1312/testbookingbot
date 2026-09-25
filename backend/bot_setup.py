@@ -60,10 +60,11 @@ def platform_description(name: str) -> str:
 
 def commands(platform: bool) -> list[BotCommand]:
     if platform:
-        # У TeleSlot самого нет записи и «Моих записей» — только подключение бизнесов.
+        # У TeleSlot самого нет записи и «Моих записей» — только подключение бизнесов и тариф.
         return [
             BotCommand(command="start", description="Что такое TeleSlot"),
             BotCommand(command="newbusiness", description="Подключить бизнес"),
+            BotCommand(command="price", description="Тариф и оплата"),
         ]
     return [
         BotCommand(command="start", description="Записаться"),
@@ -157,4 +158,15 @@ PLATFORM_START_TEXT = (
     "TeleSlot — конструктор онлайн-записи в Telegram.\n\n"
     "Подключите свой бизнес: получите отдельного бота с записью, приёмом заявок в чат и "
     "напоминаниями клиентам — без установки приложений."
+)
+
+PLATFORM_PRICE_TEXT = (
+    "Тариф TeleSlot\n\n"
+    "990 ₽ / месяц — свой бот с записью, приём заявок в чат, напоминания клиентам, "
+    "мастера и оформление.\n\n"
+    "Первая оплата — после того как убедитесь, что всё работает."
+)
+
+PLATFORM_SUBSCRIBE_REPLY_TEXT = (
+    f"Напишите {SUPPORT_CONTACT} — пришлём реквизиты для оплаты и чек после перевода."
 )

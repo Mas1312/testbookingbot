@@ -92,6 +92,7 @@ class ConfigureBotTest(unittest.TestCase):
         platform_names = [c.command for c in bot_setup.commands(platform=True)]
         client_names = [c.command for c in bot_setup.commands(platform=False)]
         self.assertIn("newbusiness", platform_names)
+        self.assertIn("price", platform_names)
         self.assertNotIn("my", platform_names)  # у TeleSlot самого нет записей
         self.assertNotIn("newbusiness", client_names)
         self.assertIn("my", client_names)
@@ -132,6 +133,8 @@ class PlatformStartTest(unittest.TestCase):
         button = message.markups[0].inline_keyboard[0][0]
         self.assertEqual(button.callback_data, "start_newbusiness")
         self.assertIsNone(button.web_app)
+        price_button = message.markups[0].inline_keyboard[0][1]
+        self.assertEqual(price_button.callback_data, "show_price")
 
     def test_start_newbusiness_button_starts_dialog_only_on_platform(self):
         message, state = FakeMessage(), FakeState()
@@ -148,6 +151,37 @@ class PlatformStartTest(unittest.TestCase):
         self.assertTrue(callback.answered)
         self.assertIsNone(state.state)
         self.assertEqual(message.answers, [])
+
+
+class PlatformPriceTest(unittest.TestCase):
+    """/price и связанные кнопки — только у платформенного бота, оплата пока ручная."""
+
+    def test_price_command_only_on_platform(self):
+        message = FakeMessage()
+        asyncio.run(bot_module.cmd_price(message, business_id=PLATFORM_BUSINESS_ID))
+        self.assertEqual(message.answers, [bot_setup.PLATFORM_PRICE_TEXT])
+        button = message.markups[0].inline_keyboard[0][0]
+        self.assertEqual(button.callback_data, "subscribe_request")
+
+    def test_price_command_refused_on_client_bot(self):
+        message = FakeMessage()
+        asyncio.run(bot_module.cmd_price(message, business_id=PLATFORM_BUSINESS_ID + 1))
+        self.assertEqual(message.answers, [bot_setup.NOT_PLATFORM_TEXT])
+
+    def test_show_price_button(self):
+        message = FakeMessage()
+        callback = FakeCallback(message)
+        asyncio.run(bot_module.on_show_price_button(callback, business_id=PLATFORM_BUSINESS_ID))
+        self.assertTrue(callback.answered)
+        self.assertEqual(message.answers, [bot_setup.PLATFORM_PRICE_TEXT])
+
+    def test_subscribe_request_points_to_support_not_a_real_charge(self):
+        message = FakeMessage()
+        callback = FakeCallback(message)
+        asyncio.run(bot_module.on_subscribe_request_button(callback, business_id=PLATFORM_BUSINESS_ID))
+        self.assertTrue(callback.answered)
+        self.assertEqual(message.answers, [bot_setup.PLATFORM_SUBSCRIBE_REPLY_TEXT])
+        self.assertIn(bot_setup.SUPPORT_CONTACT, message.answers[0])
 
 
 class PlatformGatingTest(unittest.TestCase):
