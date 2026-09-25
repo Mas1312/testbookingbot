@@ -270,6 +270,7 @@ class TextsTest(unittest.TestCase):
         text = bot_setup.done_text("Маникюр у Анны", "anna_nails_bot")
         self.assertIn("https://t.me/anna_nails_bot", text)
         self.assertIn("/start", text)
+        self.assertIn(bot_setup.SUPPORT_CONTACT, text)
 
     def test_ask_token_text_mentions_botfather_steps(self):
         text = bot_setup.ask_token_text("Маникюр у Анны")

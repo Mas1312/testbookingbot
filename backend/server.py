@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -877,9 +878,21 @@ def admin_update_schedule(payload: ScheduleRequest):
     return {"ok": True, "schedule": database.get_schedule(business["id"])}
 
 
-# Отдаём саму Mini App (index.html, style.css, app.js) как статику.
-# ВАЖНО: это должно быть смонтировано ПОСЛЕДНИМ, после всех /api роутов.
 webapp_dir = os.path.join(os.path.dirname(__file__), "..", "webapp")
+
+
+@app.get("/", include_in_schema=False)
+def root_page(business_id: int | None = None):
+    """Корень домена служит двум разным аудиториям: боты всегда открывают Mini App с
+    ?business_id=N (см. bot_setup.mini_app_url) — этот случай отдаём как раньше. Обычный
+    визит в браузер (маркетинг, ссылка из Instagram/2ГИС на сам teleslotapp.com) — без
+    параметра, ему показываем посадочную страницу TeleSlot, а не чужую Mini App записи."""
+    filename = "index.html" if business_id is not None else "landing.html"
+    return FileResponse(os.path.join(webapp_dir, filename))
+
+
+# Остальная статика (style.css, app.js, картинки и т.п.) — как раньше.
+# ВАЖНО: это должно быть смонтировано ПОСЛЕДНИМ, после всех /api роутов и роута "/" выше.
 app.mount("/", StaticFiles(directory=webapp_dir, html=True), name="webapp")
 
 
