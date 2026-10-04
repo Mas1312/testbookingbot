@@ -1,7 +1,9 @@
 import json
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
+import token_crypto
 import weekly_schedule
 from config import DB_PATH, DEFAULT_THEME, DEFAULT_SCHEDULE, SEED_DEMO_SERVICES
 
@@ -10,6 +12,35 @@ def get_connection():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _protect_bot_tokens(conn):
+    """Приводит токены ботов в БД к актуальному виду при каждом старте (идемпотентно): если задан ключ шифрования —
+    зашифровывает ещё открытые токены; у всех строк проставляет отпечаток для поиска. Без ключа токены остаются как
+    есть (разработка). Если в базе уже зашифрованные токены, а ключа нет или он не тот — token_crypto бросит ошибку
+    и сервер не запустится: это лучше, чем работать с мусором вместо токенов."""
+    encrypted = 0
+    for row in conn.execute("SELECT id, bot_token, bot_token_hash FROM businesses").fetchall():
+        value = row["bot_token"]
+        token = token_crypto.decrypt(value)
+        new_value = value
+        if token_crypto.enabled() and not token_crypto.is_encrypted(value):
+            new_value = token_crypto.encrypt(token)
+            encrypted += 1
+        new_hash = token_crypto.token_hash(token)
+        if new_value != value or row["bot_token_hash"] != new_hash:
+            conn.execute("UPDATE businesses SET bot_token = ?, bot_token_hash = ? WHERE id = ?",
+                         (new_value, new_hash, row["id"]))
+    if encrypted:
+        logging.info("Зашифровано токенов ботов в базе: %s", encrypted)
+
+
+def _business_dict(row) -> dict:
+    """Строка businesses -> словарь для остального кода: токен расшифрован, служебный отпечаток убран."""
+    business = dict(row)
+    business["bot_token"] = token_crypto.decrypt(business["bot_token"])
+    business.pop("bot_token_hash", None)
+    return business
 
 
 def _ensure_columns(conn, table: str, columns: dict):
@@ -84,9 +115,19 @@ def init_db():
         "remind0_for": "TEXT",
         # Конец бесплатного пробного периода (UTC, тот же формат). NULL — пробного периода не было (старый пилот).
         "trial_until": "TEXT",
+        # Отпечаток токена бота (HMAC, см. token_crypto): по нему ищем «этот бот уже подключён», потому что
+        # сам токен в bot_token может лежать зашифрованным (там при каждом шифровании разный шум).
+        "bot_token_hash": "TEXT",
         # График по дням недели (JSON, см. weekly_schedule.py); NULL — все дни с общими часами work_*_hour.
         "weekly_schedule": "TEXT",
     })
+    # Один бот — один бизнес. Уникальность по отпечатку (NULL у ещё не обработанных строк уникальность не нарушают).
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_businesses_token_hash ON businesses (bot_token_hash)")
+    try:
+        _protect_bot_tokens(conn)
+    except Exception:
+        conn.close()  # не оставляем открытое соединение (и заблокированный файл БД), если ключ неверный/не задан
+        raise
 
     # Платежи за подписку. telegram_charge_id уникален: Telegram может прислать successful_payment
     # повторно (повторная доставка вебхука), второй раз срок продлевать нельзя.
@@ -232,26 +273,30 @@ def create_business(owner_tg_id: int, name: str, bot_token: str, trial_days: int
     trial_days — бесплатный пробный период (передаётся только из /newbusiness). Без него бизнес — бесплатный
     пилот без срока (так заведены тестовые бизнесы и бизнес из .env), и в нём запись никогда не приостанавливается."""
     conn = get_connection()
-    cur = conn.execute(
-        """
-        INSERT INTO businesses
-            (owner_tg_id, name, bot_token, bg_color, surface_color, text_color, hint_color,
-             primary_color, primary_text_color, danger_color, success_color, radius,
-             timezone, work_start_hour, work_end_hour, slot_step_minutes, days_ahead)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            owner_tg_id, name, bot_token,
-            DEFAULT_THEME["bg_color"], DEFAULT_THEME["surface_color"],
-            DEFAULT_THEME["text_color"], DEFAULT_THEME["hint_color"],
-            DEFAULT_THEME["primary_color"], DEFAULT_THEME["primary_text_color"],
-            DEFAULT_THEME["danger_color"], DEFAULT_THEME["success_color"],
-            DEFAULT_THEME["radius"],
-            DEFAULT_SCHEDULE["timezone"], DEFAULT_SCHEDULE["work_start_hour"],
-            DEFAULT_SCHEDULE["work_end_hour"], DEFAULT_SCHEDULE["slot_step_minutes"],
-            DEFAULT_SCHEDULE["days_ahead"],
-        ),
-    )
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO businesses
+                (owner_tg_id, name, bot_token, bot_token_hash, bg_color, surface_color, text_color, hint_color,
+                 primary_color, primary_text_color, danger_color, success_color, radius,
+                 timezone, work_start_hour, work_end_hour, slot_step_minutes, days_ahead)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                owner_tg_id, name, token_crypto.encrypt(bot_token), token_crypto.token_hash(bot_token),
+                DEFAULT_THEME["bg_color"], DEFAULT_THEME["surface_color"],
+                DEFAULT_THEME["text_color"], DEFAULT_THEME["hint_color"],
+                DEFAULT_THEME["primary_color"], DEFAULT_THEME["primary_text_color"],
+                DEFAULT_THEME["danger_color"], DEFAULT_THEME["success_color"],
+                DEFAULT_THEME["radius"],
+                DEFAULT_SCHEDULE["timezone"], DEFAULT_SCHEDULE["work_start_hour"],
+                DEFAULT_SCHEDULE["work_end_hour"], DEFAULT_SCHEDULE["slot_step_minutes"],
+                DEFAULT_SCHEDULE["days_ahead"],
+            ),
+        )
+    except Exception:
+        conn.close()  # повторный токен (IntegrityError) не должен оставлять соединение открытым
+        raise
     business_id = cur.lastrowid
     if trial_days:
         trial_until = (datetime.now(dt_timezone.utc).replace(tzinfo=None, microsecond=0)
@@ -262,18 +307,16 @@ def create_business(owner_tg_id: int, name: str, bot_token: str, trial_days: int
     conn.commit()
     row = conn.execute("SELECT * FROM businesses WHERE id = ?", (business_id,)).fetchone()
     conn.close()
-    return dict(row)
+    return _business_dict(row)
 
 
 def get_or_create_business_from_env(bot_token: str, owner_tg_id: int, business_name: str):
     """Гарантирует, что для текущего BOT_TOKEN из .env есть запись в businesses —
     временный мост, пока онбординг новых бизнесов не сделан отдельным шагом (этап 4).
     Если бизнеса с таким токеном ещё нет — создаёт его с демонстрационными позициями."""
-    conn = get_connection()
-    row = conn.execute("SELECT * FROM businesses WHERE bot_token = ?", (bot_token,)).fetchone()
-    conn.close()
-    if row:
-        return dict(row)
+    existing = get_business_by_bot_token(bot_token)
+    if existing:
+        return existing
     return create_business(owner_tg_id, business_name, bot_token)
 
 
@@ -281,14 +324,14 @@ def get_all_businesses():
     conn = get_connection()
     rows = conn.execute("SELECT * FROM businesses ORDER BY id").fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [_business_dict(r) for r in rows]
 
 
 def get_business(business_id: int):
     conn = get_connection()
     row = conn.execute("SELECT * FROM businesses WHERE id = ?", (business_id,)).fetchone()
     conn.close()
-    return dict(row) if row else None
+    return _business_dict(row) if row else None
 
 
 DB_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -301,7 +344,7 @@ def get_businesses_by_owner(owner_tg_id: int, exclude_id: int | None = None) -> 
         (owner_tg_id, exclude_id if exclude_id is not None else -1),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [_business_dict(r) for r in rows]
 
 
 def record_payment(business_id: int, payer_tg_id: int, amount: int, currency: str, payload: str,
@@ -387,7 +430,7 @@ def get_subscription_reminder_candidates(exclude_id: int | None = None) -> list[
         (exclude_id if exclude_id is not None else -1,),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [_business_dict(r) for r in rows]
 
 
 def mark_subscription_reminded(business_id: int, kind: str, paid_until: str):
@@ -407,10 +450,15 @@ def set_bot_username(business_id: int, username: str | None):
 
 
 def get_business_by_bot_token(bot_token: str):
+    """Бизнес по токену бота. Ищем по отпечатку (токен в БД может быть зашифрован); `OR bot_token = ?` — на
+    случай ещё не обработанной миграцией строки с открытым токеном."""
     conn = get_connection()
-    row = conn.execute("SELECT * FROM businesses WHERE bot_token = ?", (bot_token,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM businesses WHERE bot_token_hash = ? OR bot_token = ?",
+        (token_crypto.token_hash(bot_token), bot_token),
+    ).fetchone()
     conn.close()
-    return dict(row) if row else None
+    return _business_dict(row) if row else None
 
 
 THEME_FIELDS = (

@@ -28,6 +28,27 @@ from config import (SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, BOT_TO
 from bot import dp as tg_dp
 from telegram_auth import verify_init_data
 
+class RedactInitDataFilter(logging.Filter):
+    """Подписанные данные Telegram (initData) ходят в query-строке GET-запросов, а uvicorn пишет её в журнал.
+    Пока подпись не устарела (сутки), по ней можно выдать себя за этого пользователя, поэтому из строк журнала
+    вырезаем значение `init_data=`. Остальные параметры (business_id и т. п.) остаются — они нужны для разбора."""
+    PATTERN = re.compile(r"(init_data=)[^&\s\"']+")
+
+    def _clean(self, value):
+        return self.PATTERN.sub(r"\1[скрыто]", value) if isinstance(value, str) else value
+
+    def filter(self, record):
+        record.msg = self._clean(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._clean(a) for a in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {k: self._clean(v) for k, v in record.args.items()}
+        return True
+
+
+# uvicorn.access — журнал запросов (там и лежит полный путь с query-строкой).
+logging.getLogger("uvicorn.access").addFilter(RedactInitDataFilter())
+
 app = FastAPI(title="Booking Mini App API")
 
 # CORS открыт для простоты локальной разработки.
