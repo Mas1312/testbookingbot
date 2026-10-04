@@ -88,9 +88,12 @@ class BillingBase(unittest.TestCase):
         self._orig = (database.DB_PATH, billing.PAYMENT_PROVIDER_TOKEN, notifications.get_bot)
         database.DB_PATH = os.path.join(self.tmp.name, "t.db")
         database.init_db()
-        # бизнес с id=PLATFORM_ID — платформенный (его владелец — оператор), остальные — клиенты
+        # Бизнес с id=PLATFORM_ID — платформенный (владелец — оператор). Если PLATFORM_BUSINESS_ID в окружении
+        # не 1 (на сервере он 4), id до него занимают чужие «заполнители»: их владелец не оператор и не OWNER.
         while True:
-            business = database.create_business(OPERATOR, "TeleSlot", TOKEN_A + str(len(database.get_all_businesses())))
+            count = len(database.get_all_businesses())
+            is_platform = count + 1 == PLATFORM_ID
+            business = database.create_business(OPERATOR if is_platform else 1, "TeleSlot", TOKEN_A + str(count))
             if business["id"] == PLATFORM_ID:
                 break
         self.client = database.create_business(OWNER, "Маникюр у Анны", TOKEN_B)
