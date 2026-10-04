@@ -37,12 +37,15 @@ PY
 
 echo "3/5 Создаю ключ..."
 KEY=$("$APP/venv/bin/python" -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+# Владельца запоминаем ДО копирования: копия, созданная от root, принадлежит root, и ориентироваться на неё нельзя
+# (так однажды .env стал root:root, пользователь booking перестал его читать и сервис упал).
+OWNER_SPEC=$(stat -c '%U:%G' "$ENV")
+umask 077
 cp "$ENV" "$ENV.bak-key-$STAMP"
 [ -n "$(tail -c1 "$ENV")" ] && echo >> "$ENV"   # если в конце файла нет перевода строки, не склеиваем строки
-umask 077
 printf 'TOKEN_ENCRYPTION_KEY=%s\n' "$KEY" >> "$ENV"
-chown --reference="$ENV.bak-key-$STAMP" "$ENV"
-chmod 600 "$ENV"
+chown "$OWNER_SPEC" "$ENV" "$ENV.bak-key-$STAMP"
+chmod 600 "$ENV" "$ENV.bak-key-$STAMP"
 
 echo "4/5 Перезапускаю сервис (токены зашифруются при старте)..."
 systemctl restart tg-booking

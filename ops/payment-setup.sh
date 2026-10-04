@@ -19,7 +19,10 @@ if [ -n "$TOKEN" ] && ! [[ "$TOKEN" =~ ^[0-9]+:(TEST|LIVE):[A-Za-z0-9_-]+$ ]]; t
   exit 1
 fi
 
-cp "$ENV" "$ENV.bak-payment-$(date +%Y%m%d%H%M)"
+BACKUP="$ENV.bak-payment-$(date +%Y%m%d%H%M)"
+cp "$ENV" "$BACKUP"
+chown --reference="$ENV" "$BACKUP"   # копия от root иначе принадлежала бы root; владелец — как у настоящего .env
+chmod 600 "$BACKUP"
 umask 077
 grep -v '^PAYMENT_PROVIDER_TOKEN=' "$ENV" > "$ENV.tmp" || true
 printf 'PAYMENT_PROVIDER_TOKEN=%s\n' "$TOKEN" >> "$ENV.tmp"
