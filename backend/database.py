@@ -76,7 +76,30 @@ def init_db():
         # Сбор телефона клиента: 'off' | 'optional' | 'required'; ссылка на свою политику ПДн.
         "collect_phone": "TEXT NOT NULL DEFAULT 'off'",
         "privacy_url": "TEXT",
+        # Подписка TeleSlot: оплачено до (UTC, 'YYYY-MM-DD HH:MM:SS'); NULL — пилот, оплаты ещё не было.
+        # remind3_for / remind0_for — для какого paid_until уже отправлено напоминание (чтобы не слать дважды).
+        "paid_until": "TEXT",
+        "remind3_for": "TEXT",
+        "remind0_for": "TEXT",
     })
+
+    # Платежи за подписку. telegram_charge_id уникален: Telegram может прислать successful_payment
+    # повторно (повторная доставка вебхука), второй раз срок продлевать нельзя.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER NOT NULL,
+            payer_tg_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,            -- в копейках
+            currency TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            telegram_charge_id TEXT NOT NULL UNIQUE,
+            provider_charge_id TEXT,
+            period_from TEXT NOT NULL,
+            period_to TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS services (
@@ -254,6 +277,84 @@ def get_business(business_id: int):
     row = conn.execute("SELECT * FROM businesses WHERE id = ?", (business_id,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+DB_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def get_businesses_by_owner(owner_tg_id: int, exclude_id: int | None = None) -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM businesses WHERE owner_tg_id = ? AND id != ? ORDER BY id",
+        (owner_tg_id, exclude_id if exclude_id is not None else -1),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def record_payment(business_id: int, payer_tg_id: int, amount: int, currency: str, payload: str,
+                   telegram_charge_id: str, provider_charge_id: str | None, days: int,
+                   now: datetime | None = None):
+    """Записывает оплату подписки и продлевает paid_until на `days` дней от большего из
+    «сейчас» и текущего срока (оплата заранее не сгорает). Идемпотентно по telegram_charge_id.
+
+    Возвращает (paid_until_str, is_new): is_new=False — этот платёж уже учтён раньше."""
+    now = (now or datetime.now(dt_timezone.utc)).replace(tzinfo=None, microsecond=0)
+    conn = get_connection()
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT period_to FROM payments WHERE telegram_charge_id = ?", (telegram_charge_id,)
+        ).fetchone()
+        if existing:
+            conn.execute("ROLLBACK")
+            return existing["period_to"], False
+        row = conn.execute("SELECT paid_until FROM businesses WHERE id = ?", (business_id,)).fetchone()
+        if row is None:
+            conn.execute("ROLLBACK")
+            raise ValueError(f"business {business_id} not found")
+        start = now
+        if row["paid_until"]:
+            current = datetime.strptime(row["paid_until"], DB_TIME_FORMAT)
+            if current > now:
+                start = current
+        period_to = (start + timedelta(days=days)).strftime(DB_TIME_FORMAT)
+        conn.execute(
+            """INSERT INTO payments (business_id, payer_tg_id, amount, currency, payload,
+                                     telegram_charge_id, provider_charge_id, period_from, period_to)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (business_id, payer_tg_id, amount, currency, payload, telegram_charge_id, provider_charge_id,
+             start.strftime(DB_TIME_FORMAT), period_to),
+        )
+        conn.execute("UPDATE businesses SET paid_until = ? WHERE id = ?", (period_to, business_id))
+        conn.execute("COMMIT")
+        return period_to, True
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
+
+
+def get_subscription_reminder_candidates(exclude_id: int | None = None) -> list[dict]:
+    """Бизнесы, у которых уже была оплата (paid_until задан) — кандидаты на напоминание о продлении."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM businesses WHERE paid_until IS NOT NULL AND id != ?",
+        (exclude_id if exclude_id is not None else -1,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def mark_subscription_reminded(business_id: int, kind: str, paid_until: str):
+    column = {"3d": "remind3_for", "0d": "remind0_for"}[kind]
+    conn = get_connection()
+    conn.execute(f"UPDATE businesses SET {column} = ? WHERE id = ?", (paid_until, business_id))
+    conn.commit()
+    conn.close()
 
 
 def set_bot_username(business_id: int, username: str | None):

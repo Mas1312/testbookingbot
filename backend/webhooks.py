@@ -15,7 +15,9 @@ from config import USE_WEBHOOK, WEBAPP_URL
 bots_by_business: dict[int, Bot] = {}
 
 # Типы обновлений, которые нужны хендлерам в bot.py (новый тип хендлера — добавить сюда).
-ALLOWED_UPDATES = ["message", "callback_query"]
+# pre_checkout_query нужен для оплаты подписки в платформенном боте: без него Telegram не спросит нас
+# о подтверждении платежа, и оплата не пройдёт. successful_payment приходит внутри "message".
+ALLOWED_UPDATES = ["message", "callback_query", "pre_checkout_query"]
 
 
 def webhook_secret_for(bot_token: str) -> str:

@@ -5,8 +5,10 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from aiogram.types import (CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, PreCheckoutQuery,
+                           WebAppInfo)
 
+import billing
 import bot_setup
 import database
 import notifications
@@ -225,7 +227,7 @@ async def cmd_price(message: Message, business_id: int):
     if business_id != PLATFORM_BUSINESS_ID:
         await message.answer(bot_setup.NOT_PLATFORM_TEXT)
         return
-    await message.answer(bot_setup.PLATFORM_PRICE_TEXT, reply_markup=PRICE_KEYBOARD)
+    await message.answer(billing.price_text_for(message.from_user.id), reply_markup=PRICE_KEYBOARD)
 
 
 @dp.callback_query(F.data == "show_price")
@@ -233,17 +235,94 @@ async def on_show_price_button(callback: CallbackQuery, business_id: int):
     await callback.answer()
     if business_id != PLATFORM_BUSINESS_ID or not callback.message:
         return
-    await callback.message.answer(bot_setup.PLATFORM_PRICE_TEXT, reply_markup=PRICE_KEYBOARD)
+    await callback.message.answer(billing.price_text_for(callback.from_user.id), reply_markup=PRICE_KEYBOARD)
+
+
+async def send_subscription_invoice(message: Message, business: dict):
+    await message.answer_invoice(**billing.invoice_kwargs(business))
 
 
 @dp.callback_query(F.data == "subscribe_request")
 async def on_subscribe_request_button(callback: CallbackQuery, business_id: int):
-    """Пока оплата ручная (см. bot_setup.SUPPORT_CONTACT): кнопка не списывает деньги сама,
-    а направляет в поддержку, которая пришлёт реквизиты и чек после перевода."""
+    """«Оформить подписку»: если платёжный токен подключён — счёт на оплату прямо в чате (какой бизнес —
+    спрашиваем, если их несколько); пока не подключён — направляем в поддержку (ручная оплата)."""
     await callback.answer()
     if business_id != PLATFORM_BUSINESS_ID or not callback.message:
         return
-    await callback.message.answer(bot_setup.PLATFORM_SUBSCRIBE_REPLY_TEXT)
+    if not billing.payments_enabled():
+        await callback.message.answer(bot_setup.PLATFORM_SUBSCRIBE_REPLY_TEXT)
+        return
+    businesses = database.get_businesses_by_owner(callback.from_user.id, exclude_id=PLATFORM_BUSINESS_ID)
+    if not businesses:
+        await callback.message.answer("Сначала подключите бизнес: /newbusiness. Оплата привязывается к нему.")
+    elif len(businesses) == 1:
+        await send_subscription_invoice(callback.message, businesses[0])
+    else:
+        await callback.message.answer("За какой бизнес платите?",
+                                      reply_markup=billing.choose_business_keyboard(businesses))
+
+
+@dp.callback_query(F.data.startswith("pay:"))
+async def on_pay_button(callback: CallbackQuery, business_id: int):
+    """Кнопки «Оплатить»/«Продлить»: pay:<id бизнеса>. Платить можно только за свой бизнес."""
+    await callback.answer()
+    if business_id != PLATFORM_BUSINESS_ID or not callback.message or not billing.payments_enabled():
+        return
+    target_id = billing.parse_payload(billing.PAYLOAD_PREFIX + callback.data[len("pay:"):])
+    business = database.get_business(target_id) if target_id is not None else None
+    if not business or business["id"] == PLATFORM_BUSINESS_ID or business["owner_tg_id"] != callback.from_user.id:
+        await callback.message.answer("Бизнес не найден. Откройте /price.")
+        return
+    await send_subscription_invoice(callback.message, business)
+
+
+@dp.pre_checkout_query()
+async def on_pre_checkout(query: PreCheckoutQuery, business_id: int):
+    """Telegram ждёт ответа 10 секунд, иначе отменяет платёж: поэтому тут только быстрая проверка."""
+    if business_id != PLATFORM_BUSINESS_ID:
+        await query.answer(ok=False, error_message="Оплата здесь недоступна.")
+        return
+    ok, error = billing.validate_pre_checkout(
+        query.invoice_payload, query.from_user.id, query.total_amount, query.currency
+    )
+    await query.answer(ok=ok, error_message=error)
+
+
+@dp.message(F.successful_payment)
+async def on_successful_payment(message: Message, business_id: int):
+    """Деньги уже списаны: продлеваем подписку, подтверждаем владельцу и сообщаем оператору платформы."""
+    if business_id != PLATFORM_BUSINESS_ID:
+        return
+    result = billing.apply_successful_payment(message.from_user.id, message.successful_payment)
+    if result is None:
+        # Платёж прошёл, а бизнес не нашли — не теряем: пусть владелец сразу идёт в поддержку с этим сообщением.
+        await message.answer("Платёж получен, но привязать его к бизнесу не удалось. "
+                             f"Напишите {bot_setup.SUPPORT_CONTACT}, мы всё поправим.")
+        return
+    if not result["is_new"]:
+        return  # повторная доставка того же платежа: срок уже продлён, второй раз не пишем
+    await message.answer(billing.payment_confirmation_text(result["business"], result["paid_until"]))
+    operator = database.get_business(PLATFORM_BUSINESS_ID)
+    if operator:
+        await notifications._safe_send(
+            message.bot, operator["owner_tg_id"], billing.operator_payment_text(result, message.from_user.id)
+        )
+
+
+@dp.message(Command("terms"))
+async def cmd_terms(message: Message, business_id: int):
+    if business_id != PLATFORM_BUSINESS_ID:
+        await message.answer(bot_setup.NOT_PLATFORM_TEXT)
+        return
+    await message.answer(bot_setup.PLATFORM_TERMS_TEXT)
+
+
+@dp.message(Command("support"))
+async def cmd_support(message: Message, business_id: int):
+    if business_id != PLATFORM_BUSINESS_ID:
+        await message.answer(bot_setup.NOT_PLATFORM_TEXT)
+        return
+    await message.answer(f"Вопросы по работе сервиса и оплате: {bot_setup.SUPPORT_CONTACT}")
 
 
 @dp.message(Command("cancel"))

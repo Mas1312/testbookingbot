@@ -10,7 +10,7 @@ import re
 from aiogram import Bot
 from aiogram.types import BotCommand, MenuButtonCommands, MenuButtonWebApp, WebAppInfo
 
-from config import WEBAPP_URL
+from config import SUBSCRIPTION_DAYS, SUBSCRIPTION_PRICE_RUB, WEBAPP_URL
 
 TOKEN_RE = re.compile(r"^\d{6,}:[A-Za-z0-9_-]{30,}$")
 MENU_BUTTON_TEXT = "Записаться"
@@ -65,6 +65,8 @@ def commands(platform: bool) -> list[BotCommand]:
             BotCommand(command="start", description="Что такое TeleSlot"),
             BotCommand(command="newbusiness", description="Подключить бизнес"),
             BotCommand(command="price", description="Тариф и оплата"),
+            BotCommand(command="terms", description="Условия подписки"),
+            BotCommand(command="support", description="Поддержка"),
         ]
     return [
         BotCommand(command="start", description="Записаться"),
@@ -162,11 +164,24 @@ PLATFORM_START_TEXT = (
 
 PLATFORM_PRICE_TEXT = (
     "Тариф TeleSlot\n\n"
-    "990 ₽ / месяц — свой бот с записью, приём заявок в чат, напоминания клиентам, "
-    "мастера и оформление.\n\n"
+    f"{SUBSCRIPTION_PRICE_RUB} ₽ / {SUBSCRIPTION_DAYS} дней — свой бот с записью, приём заявок в чат, "
+    "напоминания клиентам, мастера и оформление.\n\n"
     "Первая оплата — после того как убедитесь, что всё работает."
 )
 
 PLATFORM_SUBSCRIBE_REPLY_TEXT = (
     f"Напишите {SUPPORT_CONTACT} — пришлём реквизиты для оплаты и чек после перевода."
+)
+
+# Краткие условия (команда /terms, её требует Telegram от ботов с платежами). Это не оферта: полный
+# юридический текст — отдельная задача, см. docs/.
+PLATFORM_TERMS_TEXT = (
+    "Условия подписки TeleSlot\n\n"
+    f"• Стоимость — {SUBSCRIPTION_PRICE_RUB} ₽ за {SUBSCRIPTION_DAYS} дней на один бизнес. "
+    "Оплата через ЮKassa прямо в этом чате.\n"
+    "• Подписка не продлевается автоматически: перед окончанием бот напомнит, продлить можно в один шаг.\n"
+    "• Оплата заранее не сгорает: срок прибавляется к текущему.\n"
+    "• Чек отправляется на почту, указанную при оплате.\n"
+    "• Данные бизнеса и клиентов хранятся на серверах в России.\n"
+    f"• Вопросы, возврат, отключение и удаление данных — {SUPPORT_CONTACT}."
 )

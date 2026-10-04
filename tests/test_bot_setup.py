@@ -42,6 +42,7 @@ class FakeMessage:
         self.text = text
         self.answers = []
         self.markups = []
+        self.from_user = type("U", (), {"id": 1})()
 
     async def answer(self, text, **kwargs):
         self.answers.append(text)
@@ -116,6 +117,7 @@ class ConfigureBotTest(unittest.TestCase):
 class FakeCallback:
     def __init__(self, message):
         self.message = message
+        self.from_user = type("U", (), {"id": 1})()
         self.answered = False
 
     async def answer(self, *args, **kwargs):
@@ -154,7 +156,22 @@ class PlatformStartTest(unittest.TestCase):
 
 
 class PlatformPriceTest(unittest.TestCase):
-    """/price и связанные кнопки — только у платформенного бота, оплата пока ручная."""
+    """/price и связанные кнопки — только у платформенного бота. Без платёжного токена оплата ручная."""
+
+    def setUp(self):
+        import tempfile
+        import billing
+        import database
+        self.database, self.billing = database, billing
+        self.tmp = tempfile.TemporaryDirectory()
+        self._orig = (database.DB_PATH, billing.PAYMENT_PROVIDER_TOKEN)
+        database.DB_PATH = os.path.join(self.tmp.name, "t.db")
+        database.init_db()
+        billing.PAYMENT_PROVIDER_TOKEN = ""
+
+    def tearDown(self):
+        self.database.DB_PATH, self.billing.PAYMENT_PROVIDER_TOKEN = self._orig
+        self.tmp.cleanup()
 
     def test_price_command_only_on_platform(self):
         message = FakeMessage()

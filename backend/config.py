@@ -46,6 +46,13 @@ DEV_SKIP_INITDATA_CHECK = os.getenv("DEV_SKIP_INITDATA_CHECK", "false").lower() 
 # (прод-бот). Когда заведём отдельный платформенный бот, сюда пойдёт его business_id.
 PLATFORM_BUSINESS_ID = int(os.getenv("PLATFORM_BUSINESS_ID", "1"))
 
+# Оплата подписки TeleSlot внутри платформенного бота (Telegram Payments + ЮKassa).
+# Токен платёжного провайдера выдаёт @BotFather для бота TeleSlot (Payments -> ЮKassa); сначала тестовый,
+# потом боевой (содержит :LIVE:). Пока токен не задан, кнопка «Оформить подписку» ведёт в поддержку.
+PAYMENT_PROVIDER_TOKEN = os.getenv("PAYMENT_PROVIDER_TOKEN", "")
+SUBSCRIPTION_PRICE_RUB = int(os.getenv("SUBSCRIPTION_PRICE_RUB", "990"))
+SUBSCRIPTION_DAYS = int(os.getenv("SUBSCRIPTION_DAYS", "30"))
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "booking.db")
 
 # Расписание по умолчанию для НОВОГО бизнеса (при создании через create_business) —

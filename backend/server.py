@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import BufferedInputFile, Update
 
+import billing
 import bot_setup
 import database
 import notifications
@@ -327,6 +328,7 @@ async def reminder_loop():
     while True:
         try:
             await notifications.send_due_reminders()
+            await billing.send_subscription_reminders()
             if tick % 60 == 0:  # раз в час: убираем загруженные, но не применённые картинки
                 database.delete_orphan_media()
         except Exception:

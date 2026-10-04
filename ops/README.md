@@ -19,6 +19,18 @@
 Ручной пробный запуск без сообщений: `sudo -u booking python3 ops/monitor_reachability.py --dry-run`.
 Тестовое сообщение владельцу: `--test-alert`.
 
+## Оплата подписки (`payment-setup.sh`)
+Оплата идёт внутри `@teleslotapp_bot` через Telegram Payments + ЮKassa (`backend/billing.py`). Нужен платёжный токен:
+в @BotFather -> бот TeleSlot -> Bot Settings -> Payments -> ЮKassa («тест» для проверки, потом «платежи»).
+
+    ssh -t root@<сервер> "bash /opt/tg-booking-bot/ops/payment-setup.sh"
+
+Скрипт спрашивает токен (не отображается), пишет `PAYMENT_PROVIDER_TOKEN` в `.env` и перезапускает сервис; тот же
+скрипт переключает тест на боевой токен или отключает оплату (пустой ввод). Цена и срок — `SUBSCRIPTION_PRICE_RUB`
+(по умолчанию 990) и `SUBSCRIPTION_DAYS` (30) в `.env`. После перезапуска вебхуки перерегистрируются сами
+(в `allowed_updates` есть `pre_checkout_query`). Оплаты — таблица `payments`, срок — `businesses.paid_until`.
+Блокировки за неоплату нет: только учёт и напоминания за 3 дня и после окончания.
+
 ## Внешний бэкап (`backup_offsite.py`)
 Каждую ночь (03:40) снимок БД -> gzip -> шифрование (openssl AES-256, PBKDF2) -> S3-хранилище Beget (бакет в СПб),
 затем контрольное восстановление: файл скачивается обратно и сверяется sha256. Копии старше 30 дней удаляются.
