@@ -402,6 +402,8 @@ async def telegram_webhook(business_id: int, request: Request):
 @app.get("/api/config")
 def api_config(business_id: int | None = None):
     business = resolve_business(business_id)
+    suspended = billing.is_suspended(business)
+    platform = database.get_business(PLATFORM_BUSINESS_ID) if suspended else None
     return {
         "business_id": business["id"],
         "business_name": business["name"],
@@ -411,6 +413,9 @@ def api_config(business_id: int | None = None):
         "logo_url": media_url(business["logo_media_id"]),
         "collect_phone": business["collect_phone"],
         "privacy_url": business["privacy_url"],
+        # Пробный период или подписка закончились: клиентам запись не показываем, владельцу — подсказку, куда платить.
+        "suspended": suspended,
+        "platform_link": bot_setup.bot_link(platform["bot_username"]) if platform and platform.get("bot_username") else None,
     }
 
 
@@ -454,6 +459,9 @@ def api_slots(service_id: int, date: str, business_id: int | None = None, master
 @app.post("/api/book")
 def api_book(booking: BookingRequest, background_tasks: BackgroundTasks):
     business = resolve_business(booking.business_id)
+    if billing.is_suspended(business):
+        # Клиенту про оплату не говорим — это дело владельца; владелец узнаёт из напоминаний, кабинета и баннера.
+        raise HTTPException(status_code=403, detail="Запись временно недоступна. Попробуйте позже")
     service = database.get_service(business["id"], booking.service_id)
     if not service:
         raise HTTPException(status_code=404, detail="Позиция не найдена")

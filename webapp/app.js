@@ -364,6 +364,14 @@ async function loadServices() {
   state.services = await api(`/api/services?${qs({ business_id: state.businessId })}`);
   el("business-title").textContent = state.config.business_name || "Выберите услугу";
   const emptyMsg = el("no-services-msg");
+  if (state.config.suspended) {
+    // Пробный период/подписка закончились. Клиенту про оплату не пишем — только что запись пока недоступна
+    // (сервер тоже не примет заявку: см. /api/book). «Мои записи» остаются: отменить свою запись можно всегда.
+    emptyMsg.textContent = "Запись временно недоступна. Попробуйте позже.";
+    emptyMsg.classList.remove("hidden");
+    el("services-list").innerHTML = "";
+    return;
+  }
   emptyMsg.textContent = state.isOwner
     ? "Пока нет ни одной услуги. Добавьте их во вкладке «Управление», раздел «Позиции»."
     : "Запись скоро откроется — владелец ещё настраивает услуги. Загляните позже!";
@@ -1804,6 +1812,7 @@ async function init() {
   state.isOwner = !!(state.myTgId && state.config.owner_tg_id && state.myTgId === state.config.owner_tg_id);
 
   setupModeSwitch();
+  setupSuspendedBanner();
   await loadServices();
   showScreen("services");
   await maybeStartWizard();
@@ -1811,6 +1820,18 @@ async function init() {
   // Запуск из кабинета TeleSlot: ссылка вида ?business_id=N&admin=1&from=cabinet.
   if (urlParams.get("from") === "cabinet" && state.isOwner) setupCabinetBack();
   if (urlParams.get("admin") === "1" && state.isOwner && !state.admin.wizardActive) switchMode("admin");
+}
+
+// Баннер владельцу, если запись приостановлена за неоплату. Кабинет открывается в чате с платформенным ботом
+// (другой бот — другая подпись), поэтому ведём в этот чат, а не по ссылке /cabinet.
+function setupSuspendedBanner() {
+  if (!state.config.suspended || !state.isOwner) return;
+  el("suspended-banner").classList.remove("hidden");
+  el("suspended-open-btn").addEventListener("click", () => {
+    const link = state.config.platform_link;
+    if (link && tg.openTelegramLink) tg.openTelegramLink(link);
+    else toast("Откройте бота TeleSlot в Telegram и зайдите в «Кабинет»");
+  });
 }
 
 // Кнопка «назад в кабинет»: и системная кнопка Telegram, и видимая ссылка (на старых клиентах BackButton нет).

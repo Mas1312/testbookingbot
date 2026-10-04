@@ -315,6 +315,9 @@ class OnboardingFlowTest(unittest.TestCase):
         self.assertEqual(self.registered, [business["id"]])
         self.assertEqual(self.configured, [business["id"]])
         self.assertIn("https://t.me/anna_nails_bot", message.answers[-1])
+        # Пробный период стартует с подключения, и владельцу о нём сказано сразу.
+        self.assertIsNotNone(business["trial_until"])
+        self.assertIn("Пробный период", message.answers[-1])
 
     def test_not_a_token_is_rejected_without_deleting(self):
         message = FakeTokenMessage("привет")

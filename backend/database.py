@@ -82,6 +82,8 @@ def init_db():
         "paid_until": "TEXT",
         "remind3_for": "TEXT",
         "remind0_for": "TEXT",
+        # Конец бесплатного пробного периода (UTC, тот же формат). NULL — пробного периода не было (старый пилот).
+        "trial_until": "TEXT",
         # График по дням недели (JSON, см. weekly_schedule.py); NULL — все дни с общими часами work_*_hour.
         "weekly_schedule": "TEXT",
     })
@@ -222,10 +224,13 @@ def _seed_demo_services(conn, business_id: int):
     )
 
 
-def create_business(owner_tg_id: int, name: str, bot_token: str):
+def create_business(owner_tg_id: int, name: str, bot_token: str, trial_days: int | None = None):
     """Заводит новый бизнес (свой Telegram-бот, свой владелец) с темой и расписанием по
     умолчанию. Позиций нет: их владелец добавляет в мастере первого запуска (см. templates.py).
-    Демо-позиции добавляются только при SEED_DEMO_SERVICES=true (локальная разработка)."""
+    Демо-позиции добавляются только при SEED_DEMO_SERVICES=true (локальная разработка).
+
+    trial_days — бесплатный пробный период (передаётся только из /newbusiness). Без него бизнес — бесплатный
+    пилот без срока (так заведены тестовые бизнесы и бизнес из .env), и в нём запись никогда не приостанавливается."""
     conn = get_connection()
     cur = conn.execute(
         """
@@ -248,6 +253,10 @@ def create_business(owner_tg_id: int, name: str, bot_token: str):
         ),
     )
     business_id = cur.lastrowid
+    if trial_days:
+        trial_until = (datetime.now(dt_timezone.utc).replace(tzinfo=None, microsecond=0)
+                       + timedelta(days=trial_days)).strftime(DB_TIME_FORMAT)
+        conn.execute("UPDATE businesses SET trial_until = ? WHERE id = ?", (trial_until, business_id))
     if SEED_DEMO_SERVICES:
         _seed_demo_services(conn, business_id)
     conn.commit()
@@ -371,10 +380,10 @@ def get_payments_by_owner(owner_tg_id: int, limit: int = 20) -> list[dict]:
 
 
 def get_subscription_reminder_candidates(exclude_id: int | None = None) -> list[dict]:
-    """Бизнесы, у которых уже была оплата (paid_until задан) — кандидаты на напоминание о продлении."""
+    """Бизнесы с оплатой (paid_until) или пробным периодом (trial_until) — кандидаты на напоминание."""
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM businesses WHERE paid_until IS NOT NULL AND id != ?",
+        "SELECT * FROM businesses WHERE (paid_until IS NOT NULL OR trial_until IS NOT NULL) AND id != ?",
         (exclude_id if exclude_id is not None else -1,),
     ).fetchall()
     conn.close()

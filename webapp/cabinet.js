@@ -66,10 +66,15 @@
 
   function statusView(b) {
     if (b.status === "pilot") return { cls: "", text: "Пилот: оплата пока не требуется" };
+    if (b.status === "trial") return { cls: "ok", text: `Пробный период до ${b.trial_until}` };
+    if (b.status === "trial_expired") return { cls: "bad", text: "Пробный период закончился: запись приостановлена" };
     if (b.status === "active") return { cls: "ok", text: `Оплачено до ${b.paid_until}` };
     if (b.status === "expiring") return { cls: "warn", text: `Заканчивается ${b.paid_until}` };
-    return { cls: "bad", text: `Срок закончился ${b.paid_until}` };
+    return { cls: "bad", text: `Срок закончился ${b.paid_until}: запись приостановлена` };
   }
+
+  // Оплата с нуля (пилот, пробный период) и продление (уже была оплата) — разные подписи на кнопке.
+  const isFirstPayment = (b) => b.status === "pilot" || b.status === "trial" || b.status === "trial_expired";
 
   function daysWord(n) {
     const m10 = n % 10, m100 = n % 100;
@@ -118,8 +123,11 @@
         : h("p", { class: "biz-bot", text: "Бот подключается…" }),
       h("span", { class: `badge ${view.cls}`.trim(), text: view.text }),
     );
-    if (b.status === "active" || b.status === "expiring") {
+    if (b.status === "active" || b.status === "expiring" || b.status === "trial") {
       card.append(h("p", { class: "meta", text: `Осталось ${b.days_left} ${daysWord(b.days_left)}` }));
+    }
+    if (b.suspended) {
+      card.append(h("p", { class: "meta", text: "Клиенты сейчас не могут записаться. После оплаты запись заработает сразу." }));
     }
 
     // Сводка: что требует внимания прямо сейчас.
@@ -136,9 +144,9 @@
       location.href = `/?business_id=${b.id}&admin=1&from=cabinet`;
     } }));
 
-    const urgent = b.status === "expiring" || b.status === "expired";
+    const urgent = b.status === "expiring" || b.status === "expired" || b.status === "trial_expired";
     if (data.payments_enabled) {
-      const label = b.status === "pilot"
+      const label = isFirstPayment(b)
         ? `Оплатить ${rub(data.price_rub)} за ${data.days} ${daysWord(data.days)}`
         : `Продлить на ${data.days} ${daysWord(data.days)}: ${rub(data.price_rub)}`;
       const btn = h("button", { class: urgent ? "btn urgent" : "btn ghost", type: "button", text: label });

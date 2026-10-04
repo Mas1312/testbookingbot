@@ -8,7 +8,7 @@
        а скрипт блокирующий — приложение висело бы на белом экране. Обновление: скачать заново с
        https://telegram.org/js/telegram-web-app.js и закоммитить. -->
   <script src="telegram-web-app.js?v=1"></script>
-  <link rel="stylesheet" href="style.css?v=12" />
+  <link rel="stylesheet" href="style.css?v=13" />
 </head>
 <body>
   <!-- Набор иконок (контурные, 24×24): подставляются через <svg class="icon"><use href="#i-имя"/></svg> -->
@@ -33,6 +33,12 @@
   </header>
 
   <div id="app">
+
+    <!-- Запись приостановлена (пробный период или подписка закончились): баннер видит только владелец -->
+    <div id="suspended-banner" class="suspended-banner hidden">
+      <p><b>Запись для клиентов приостановлена.</b> Закончился пробный период или оплаченный срок. Оплатите подписку в «Кабинете» TeleSlot: после оплаты запись заработает сразу.</p>
+      <button id="suspended-open-btn" class="primary-btn" type="button">Открыть TeleSlot</button>
+    </div>
 
     <!-- Возврат в кабинет TeleSlot: виден, только если админку открыли из кабинета (?from=cabinet) -->
     <a id="back-to-cabinet" class="back-to-cabinet hidden" href="/cabinet"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Кабинет TeleSlot</a>
@@ -579,6 +585,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=12"></script>
+  <script src="app.js?v=13"></script>
 </body>
 </html>

@@ -13,7 +13,7 @@ import bot_setup
 import database
 import notifications
 import webhooks
-from config import BOT_TOKEN, PLATFORM_BUSINESS_ID, WEBAPP_URL
+from config import BOT_TOKEN, PLATFORM_BUSINESS_ID, TRIAL_DAYS, WEBAPP_URL
 
 logging.basicConfig(level=logging.INFO)
 
@@ -395,13 +395,15 @@ async def process_bot_token(message: Message, state: FSMContext):
     business_name = data["business_name"]
     owner_tg_id = message.from_user.id
 
-    business = database.create_business(owner_tg_id, business_name, token)
+    # Бесплатный пробный период стартует с подключения; потом запись приостановится до оплаты (billing.is_suspended).
+    business = database.create_business(owner_tg_id, business_name, token, trial_days=TRIAL_DAYS)
     database.set_bot_username(business["id"], me.username)
     await state.clear()
     await webhooks.register_webhook(business)
     await bot_setup.configure_business_bot(business)
 
-    await message.answer(bot_setup.done_text(business_name, me.username), disable_web_page_preview=True)
+    await message.answer(bot_setup.done_text(business_name, me.username, trial_days=TRIAL_DAYS),
+                         disable_web_page_preview=True)
 
 
 @dp.message()

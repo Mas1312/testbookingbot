@@ -1423,3 +1423,19 @@ p.center {
 .break-row {
   margin-top: 8px;
 }
+
+/* ===== Запись приостановлена: баннер владельцу ===== */
+.suspended-banner {
+  background: var(--surface);
+  border: 1.5px solid var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  margin: 0 0 14px;
+}
+
+.suspended-banner p {
+  margin: 0 0 4px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text);
+}

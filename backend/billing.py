@@ -18,7 +18,8 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPri
 
 import bot_setup
 import database
-from config import PAYMENT_PROVIDER_TOKEN, PLATFORM_BUSINESS_ID, SUBSCRIPTION_DAYS, SUBSCRIPTION_PRICE_RUB
+from config import (PAYMENT_PROVIDER_TOKEN, PLATFORM_BUSINESS_ID, SUBSCRIPTION_DAYS, SUBSCRIPTION_PRICE_RUB,
+                    TRIAL_DAYS)
 
 PAYLOAD_PREFIX = "sub:"
 CURRENCY = "RUB"
@@ -107,16 +108,39 @@ def validate_pre_checkout(payload: str, user_id: int, total_amount: int, currenc
     return True, None
 
 
+SUSPENDED_STATUSES = {"expired", "trial_expired"}
+
+
+def _days_left(remaining: timedelta) -> int:
+    return remaining.days + (1 if remaining.seconds else 0)
+
+
 def subscription_status(business: dict, now: datetime | None = None) -> tuple[str, int | None]:
-    """('pilot'|'active'|'expiring'|'expired', осталось дней или None). pilot — оплаты ещё не было."""
-    if not business.get("paid_until"):
-        return "pilot", None
+    """(статус, осталось дней или None).
+
+    Есть оплата (paid_until): 'active' | 'expiring' (осталось <= 3 дней) | 'expired'.
+    Оплаты нет, но был пробный период (trial_until): 'trial' | 'trial_expired'.
+    Ни того ни другого: 'pilot' — бесплатный пилот без срока (бизнесы, заведённые до пробного периода)."""
     now = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
-    remaining = datetime.strptime(business["paid_until"], database.DB_TIME_FORMAT) - now
-    if remaining <= timedelta(0):
-        return "expired", 0
-    days_left = remaining.days + (1 if remaining.seconds else 0)
-    return ("expiring" if remaining <= REMIND_BEFORE else "active"), days_left
+    if business.get("paid_until"):
+        remaining = datetime.strptime(business["paid_until"], database.DB_TIME_FORMAT) - now
+        if remaining <= timedelta(0):
+            return "expired", 0
+        return ("expiring" if remaining <= REMIND_BEFORE else "active"), _days_left(remaining)
+    if business.get("trial_until"):
+        remaining = datetime.strptime(business["trial_until"], database.DB_TIME_FORMAT) - now
+        if remaining <= timedelta(0):
+            return "trial_expired", 0
+        return "trial", _days_left(remaining)
+    return "pilot", None
+
+
+def is_suspended(business: dict, now: datetime | None = None) -> bool:
+    """Запись для клиентов приостановлена: пробный период или оплаченный срок закончились. Платформенный бот
+    и бесплатный пилот (без trial_until и paid_until) никогда не приостанавливаются."""
+    if business.get("id") == PLATFORM_BUSINESS_ID:
+        return False
+    return subscription_status(business, now)[0] in SUSPENDED_STATUSES
 
 
 def cabinet_payload(owner_tg_id: int, now: datetime | None = None) -> dict:
@@ -128,8 +152,9 @@ def cabinet_payload(owner_tg_id: int, now: datetime | None = None) -> dict:
         items.append({
             "id": b["id"], "name": b["name"], "bot_username": username,
             "link": bot_setup.bot_link(username) if username else None,
-            "status": status, "days_left": days_left,
+            "status": status, "days_left": days_left, "suspended": status in SUSPENDED_STATUSES,
             "paid_until": format_paid_until(b["paid_until"]) if b.get("paid_until") else None,
+            "trial_until": format_paid_until(b["trial_until"]) if b.get("trial_until") else None,
             **database.get_business_stats(b),
         })
     history = [{
@@ -138,15 +163,23 @@ def cabinet_payload(owner_tg_id: int, now: datetime | None = None) -> dict:
     } for p in database.get_payments_by_owner(owner_tg_id)]
     return {
         "businesses": items, "history": history, "payments_enabled": payments_enabled(),
-        "price_rub": SUBSCRIPTION_PRICE_RUB, "days": SUBSCRIPTION_DAYS,
+        "price_rub": SUBSCRIPTION_PRICE_RUB, "days": SUBSCRIPTION_DAYS, "trial_days": TRIAL_DAYS,
         "support": bot_setup.SUPPORT_CONTACT,
     }
 
 
-def subscription_line(business: dict) -> str:
-    if business.get("paid_until"):
-        return f"«{business['name']}»: оплачено до {format_paid_until(business['paid_until'])}"
-    return f"«{business['name']}»: пилот, оплата пока не требуется"
+def subscription_line(business: dict, now: datetime | None = None) -> str:
+    status, _ = subscription_status(business, now)
+    name = business["name"]
+    if status in ("active", "expiring"):
+        return f"«{name}»: оплачено до {format_paid_until(business['paid_until'])}"
+    if status == "expired":
+        return f"«{name}»: срок закончился {format_paid_until(business['paid_until'])}, запись приостановлена"
+    if status == "trial":
+        return f"«{name}»: пробный период до {format_paid_until(business['trial_until'])}"
+    if status == "trial_expired":
+        return f"«{name}»: пробный период закончился, запись приостановлена"
+    return f"«{name}»: пилот, оплата пока не требуется"
 
 
 def price_text_for(owner_tg_id: int) -> str:
@@ -200,19 +233,32 @@ def operator_payment_text(result: dict, payer_tg_id: int) -> str:
             f"(владелец {payer_tg_id}), оплачено до {format_paid_until(result['paid_until'])}.")
 
 
-def reminder_text(business: dict, kind: str) -> str:
-    """Уходит через _safe_send (parse_mode=HTML), поэтому название бизнеса экранируем."""
-    date = format_paid_until(business["paid_until"])
+TRIAL_REMIND_BEFORE = timedelta(days=1)  # пробный период короткий (3 дня): предупреждаем за сутки, а не за 3 дня
+
+
+def reminder_text(business: dict, kind: str, end: str | None = None, trial: bool = False) -> str:
+    """Уходит через _safe_send (parse_mode=HTML), поэтому название бизнеса экранируем.
+    kind: '3d' — скоро конец, '0d' — уже закончилось (запись приостановлена). end — конец срока (по умолчанию paid_until)."""
+    date = format_paid_until(end or business["paid_until"])
     name = html.escape(business["name"])
+    if trial:
+        if kind == "3d":
+            return (f"Пробный период «{name}» заканчивается {date}. После этого запись для клиентов "
+                    "приостановится. Оформить подписку:")
+        return (f"Пробный период «{name}» закончился: запись для клиентов приостановлена. "
+                "После оплаты она сразу заработает снова:")
     if kind == "3d":
-        return f"Подписка на «{name}» заканчивается {date}. Продлить можно в один шаг:"
-    return f"Подписка на «{name}» закончилась {date}. Продлить:"
+        return (f"Подписка на «{name}» заканчивается {date}. После окончания запись для клиентов "
+                "приостановится. Продлить можно в один шаг:")
+    return (f"Подписка на «{name}» закончилась {date}: запись для клиентов приостановлена. "
+            "После оплаты она сразу заработает снова:")
 
 
 async def send_subscription_reminders(now: datetime | None = None) -> int:
-    """За 3 дня до конца и после окончания напоминает владельцу в платформенном боте (по разу на срок).
-    Отметку «напомнили» ставим после первой попытки даже при неудаче: заблокировавшему бота не надо слать
-    повторы каждую минуту. Возвращает число отправленных."""
+    """Напоминает владельцу в платформенном боте (по разу на срок): за 3 дня до конца оплаченного периода,
+    за сутки до конца пробного и после окончания любого из них. Отметку «напомнили» ставим после первой
+    попытки даже при неудаче: заблокировавшему бота не надо слать повторы каждую минуту.
+    Возвращает число отправленных."""
     import notifications  # здесь, чтобы не создавать цикл импортов на уровне модуля
 
     now = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
@@ -221,20 +267,23 @@ async def send_subscription_reminders(now: datetime | None = None) -> int:
         return 0
     sent = 0
     for business in database.get_subscription_reminder_candidates(exclude_id=PLATFORM_BUSINESS_ID):
-        paid_until = business["paid_until"]
-        remaining = datetime.strptime(paid_until, database.DB_TIME_FORMAT) - now
+        # Оплата главнее пробного периода: если она есть, срок и окно напоминаний — по ней.
+        trial = not business.get("paid_until")
+        end = business["trial_until"] if trial else business["paid_until"]
+        remaining = datetime.strptime(end, database.DB_TIME_FORMAT) - now
         if remaining <= timedelta(0):
             kind, already = "0d", business.get("remind0_for")
-        elif remaining <= REMIND_BEFORE:
+        elif remaining <= (TRIAL_REMIND_BEFORE if trial else REMIND_BEFORE):
             kind, already = "3d", business.get("remind3_for")
         else:
             continue
-        if already == paid_until:
+        if already == end:
             continue
-        database.mark_subscription_reminded(business["id"], kind, paid_until)
+        database.mark_subscription_reminded(business["id"], kind, end)
         ok = await notifications._safe_send(
-            notifications.get_bot(platform), business["owner_tg_id"], reminder_text(business, kind),
-            reply_markup=pay_keyboard(business, "Продлить") if payments_enabled() else None,
+            notifications.get_bot(platform), business["owner_tg_id"],
+            reminder_text(business, kind, end=end, trial=trial),
+            reply_markup=pay_keyboard(business, "Оплатить" if trial else "Продлить") if payments_enabled() else None,
         )
         sent += 1 if ok else 0
     return sent

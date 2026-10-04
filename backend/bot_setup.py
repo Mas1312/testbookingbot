@@ -10,7 +10,7 @@ import re
 from aiogram import Bot
 from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
 
-from config import SUBSCRIPTION_DAYS, SUBSCRIPTION_PRICE_RUB, WEBAPP_URL
+from config import SUBSCRIPTION_DAYS, SUBSCRIPTION_PRICE_RUB, TRIAL_DAYS, WEBAPP_URL
 
 TOKEN_RE = re.compile(r"^\d{6,}:[A-Za-z0-9_-]{30,}$")
 MENU_BUTTON_TEXT = "Записаться"
@@ -150,10 +150,30 @@ TOKEN_REJECTED_TEXT = (
 TOKEN_ALREADY_USED_TEXT = "Этот бот уже подключён к системе. Пришлите токен другого бота, или /cancel."
 
 
-def done_text(name: str, username: str) -> str:
+def days_word(n: int) -> str:
+    """1 день, 2-4 дня, 5+ дней."""
+    if n % 10 == 1 and n % 100 != 11:
+        return "день"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return "дня"
+    return "дней"
+
+
+TRIAL_PHRASE = f"{TRIAL_DAYS} {days_word(TRIAL_DAYS)}"
+
+
+def done_text(name: str, username: str, trial_days: int = 0) -> str:
+    trial_line = ""
+    if trial_days:
+        trial_line = (
+            f"\nПробный период: {trial_days} {days_word(trial_days)} бесплатно. Дальше подписка "
+            f"{SUBSCRIPTION_PRICE_RUB} ₽ за {SUBSCRIPTION_DAYS} дней (условия — /price). Если не оплатить, "
+            "запись для клиентов приостановится до оплаты.\n"
+        )
     return (
         f"Готово! «{name}» подключён: @{username}\n"
-        f"Ссылка для клиентов: {bot_link(username)}\n\n"
+        f"Ссылка для клиентов: {bot_link(username)}\n"
+        f"{trial_line}\n"
         "Что дальше (пара минут):\n"
         f"1. Откройте своего бота по ссылке выше и нажмите /start. Это обязательно: иначе Telegram не даст ему "
         "присылать вам уведомления о новых заявках.\n"
@@ -168,14 +188,15 @@ NOT_PLATFORM_TEXT = "Нажмите /start, чтобы записаться, и�
 PLATFORM_START_TEXT = (
     "TeleSlot — конструктор онлайн-записи в Telegram.\n\n"
     "Подключите свой бизнес: получите отдельного бота с записью, приёмом заявок в чат и "
-    "напоминаниями клиентам — без установки приложений."
+    f"напоминаниями клиентам — без установки приложений. Первые {TRIAL_PHRASE} бесплатно."
 )
 
 PLATFORM_PRICE_TEXT = (
     "Тариф TeleSlot\n\n"
     f"{SUBSCRIPTION_PRICE_RUB} ₽ / {SUBSCRIPTION_DAYS} дней — свой бот с записью, приём заявок в чат, "
     "напоминания клиентам, мастера и оформление.\n\n"
-    "Первая оплата — после того как убедитесь, что всё работает."
+    f"Первые {TRIAL_PHRASE} после подключения бизнеса — бесплатно. Если не оплатить, запись для клиентов "
+    "приостановится до оплаты."
 )
 
 PLATFORM_SUBSCRIBE_REPLY_TEXT = (
@@ -188,6 +209,8 @@ PLATFORM_PRIVACY_URL = f"{WEBAPP_URL}/platform-privacy.html"
 # Краткие условия (команда /terms, её требует Telegram от ботов с платежами); полный текст — оферта по ссылке.
 PLATFORM_TERMS_TEXT = (
     "Условия подписки TeleSlot\n\n"
+    f"• Пробный период — {TRIAL_PHRASE} бесплатно с подключения бизнеса. Затем запись для клиентов "
+    "приостанавливается до оплаты, данные сохраняются.\n"
     f"• Стоимость — {SUBSCRIPTION_PRICE_RUB} ₽ за {SUBSCRIPTION_DAYS} дней на один бизнес. "
     "Оплата через ЮKassa прямо в этом чате.\n"
     "• Подписка не продлевается автоматически: перед окончанием бот напомнит, продлить можно в один шаг.\n"
