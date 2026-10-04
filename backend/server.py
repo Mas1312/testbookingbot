@@ -857,6 +857,66 @@ async def admin_bot_refresh(payload: OwnerActionRequest):
     return {"ok": not failed, "failed": failed}
 
 
+# ---------- Кабинет TeleSlot (Mini App платформенного бота) ----------
+# Подпись initData здесь проверяется токеном ПЛАТФОРМЕННОГО бота: кабинет открывается из @teleslotapp_bot,
+# а не из бота какого-то бизнеса. Владелец видит только свои бизнесы.
+
+class CabinetInvoiceRequest(BaseModel):
+    business_id: int
+    init_data: str = ""
+    owner_tg_id: int | None = None   # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
+
+
+# Юридические страницы: ссылки показываем, только если страница реально лежит в webapp/ (нет файла — нет битой ссылки).
+CABINET_DOCS = [("offer.html", "Публичная оферта"), ("platform-privacy.html", "Политика обработки данных")]
+
+
+def check_cabinet_user(init_data: str, tg_id_fallback: int | None = None) -> int:
+    platform = database.get_business(PLATFORM_BUSINESS_ID)
+    if not platform:
+        raise HTTPException(status_code=503, detail="Кабинет временно недоступен")
+    user_id = verify_init_data(init_data, platform["bot_token"])
+    if user_id is None and DEV_SKIP_INITDATA_CHECK and tg_id_fallback:
+        user_id = tg_id_fallback
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="Откройте кабинет из бота TeleSlot в Telegram")
+    return user_id
+
+
+@app.get("/api/cabinet/me")
+def cabinet_me(init_data: str = "", owner_tg_id: int | None = None):
+    user_id = check_cabinet_user(init_data, owner_tg_id)
+    data = billing.cabinet_payload(user_id)
+    data["docs"] = [{"url": f"/{name}", "title": title} for name, title in CABINET_DOCS
+                    if os.path.exists(os.path.join(webapp_dir, name))]
+    data["user_id"] = user_id
+    return data
+
+
+@app.post("/api/cabinet/invoice")
+async def cabinet_invoice(payload: CabinetInvoiceRequest):
+    """Ссылка на оплату подписки (createInvoiceLink) — Mini App открывает её через WebApp.openInvoice.
+    После оплаты Telegram шлёт боту тот же successful_payment, что и при счёте в чате."""
+    user_id = check_cabinet_user(payload.init_data, payload.owner_tg_id)
+    if not billing.payments_enabled():
+        raise HTTPException(status_code=409, detail="Оплата пока недоступна, напишите в поддержку")
+    business = database.get_business(payload.business_id)
+    if not business or business["id"] == PLATFORM_BUSINESS_ID or business["owner_tg_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Бизнес не найден")
+    platform = database.get_business(PLATFORM_BUSINESS_ID)
+    try:
+        link = await notifications.get_bot(platform).create_invoice_link(**billing.invoice_kwargs(business))
+    except Exception:
+        logging.exception("Не удалось создать ссылку на оплату business_id=%s", business["id"])
+        raise HTTPException(status_code=502, detail="Не удалось создать счёт, попробуйте позже")
+    return {"link": link}
+
+
+@app.get("/cabinet", include_in_schema=False)
+def cabinet_page():
+    return FileResponse(os.path.join(webapp_dir, "cabinet.html"))
+
+
 @app.get("/api/admin/schedule")
 def admin_get_schedule(business_id: int, init_data: str = "", owner_tg_id: int | None = None):
     business = resolve_business(business_id)

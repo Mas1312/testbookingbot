@@ -338,6 +338,20 @@ def record_payment(business_id: int, payer_tg_id: int, amount: int, currency: st
         conn.close()
 
 
+def get_payments_by_owner(owner_tg_id: int, limit: int = 20) -> list[dict]:
+    """История оплат по бизнесам владельца (новые сверху) — для кабинета TeleSlot."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT p.id, p.business_id, b.name AS business_name, p.amount, p.currency, p.period_from, p.period_to,
+                  p.created_at
+           FROM payments p JOIN businesses b ON b.id = p.business_id
+           WHERE b.owner_tg_id = ? ORDER BY p.id DESC LIMIT ?""",
+        (owner_tg_id, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_subscription_reminder_candidates(exclude_id: int | None = None) -> list[dict]:
     """Бизнесы, у которых уже была оплата (paid_until задан) — кандидаты на напоминание о продлении."""
     conn = get_connection()

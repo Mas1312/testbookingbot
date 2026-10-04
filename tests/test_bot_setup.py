@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 import bot as bot_module  # noqa: E402
 import bot_setup  # noqa: E402
-from aiogram.types import MenuButtonCommands, MenuButtonWebApp  # noqa: E402
+from aiogram.types import MenuButtonWebApp  # noqa: E402
 from config import PLATFORM_BUSINESS_ID  # noqa: E402
 
 VALID_TOKEN = "123456789:AAEhBOweik6ad9r_QXMENQjcrTu-Ge1S3lM"
@@ -105,13 +105,19 @@ class ConfigureBotTest(unittest.TestCase):
         self.assertLessEqual(len(bot_setup.platform_short_description(long_name)), 120)
         self.assertLessEqual(len(bot_setup.platform_description(long_name)), 512)
 
-    def test_platform_menu_button_is_not_a_mini_app(self):
-        """TeleSlot не должен предлагать открыть Mini App записи — у него нет ни услуг, ни клиентов."""
+    def test_platform_menu_button_opens_cabinet_not_booking_app(self):
+        """У TeleSlot нет услуг и клиентов, поэтому Mini App ЗАПИСИ он не показывает — но у него свой «Кабинет»."""
         bot = FakeBot()
         asyncio.run(bot_setup.configure_bot(bot, BUSINESS, platform=True))
         menu = bot.calls["menu_button"]["menu_button"]
-        self.assertIsInstance(menu, MenuButtonCommands)
-        self.assertNotIsInstance(menu, MenuButtonWebApp)
+        self.assertIsInstance(menu, MenuButtonWebApp)
+        self.assertEqual(menu.text, "Кабинет")
+        self.assertTrue(menu.web_app.url.endswith("/cabinet"))
+        self.assertNotIn("business_id", menu.web_app.url)
+
+    def test_platform_commands_include_cabinet(self):
+        self.assertIn("cabinet", [c.command for c in bot_setup.commands(platform=True)])
+        self.assertNotIn("cabinet", [c.command for c in bot_setup.commands(platform=False)])
 
 
 class FakeCallback:
@@ -137,6 +143,17 @@ class PlatformStartTest(unittest.TestCase):
         self.assertIsNone(button.web_app)
         price_button = message.markups[0].inline_keyboard[0][1]
         self.assertEqual(price_button.callback_data, "show_price")
+        cabinet = message.markups[0].inline_keyboard[1][0]
+        self.assertEqual(cabinet.text, "Кабинет")
+        self.assertTrue(cabinet.web_app.url.endswith("/cabinet"))  # кабинет, а не Mini App записи
+
+    def test_cabinet_command_only_on_platform(self):
+        message = FakeMessage()
+        asyncio.run(bot_module.cmd_cabinet(message, business_id=PLATFORM_BUSINESS_ID))
+        self.assertTrue(message.markups[0].inline_keyboard[0][0].web_app.url.endswith("/cabinet"))
+        other = FakeMessage()
+        asyncio.run(bot_module.cmd_cabinet(other, business_id=PLATFORM_BUSINESS_ID + 1))
+        self.assertEqual(other.answers, [bot_setup.NOT_PLATFORM_TEXT])
 
     def test_start_newbusiness_button_starts_dialog_only_on_platform(self):
         message, state = FakeMessage(), FakeState()

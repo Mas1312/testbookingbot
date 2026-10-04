@@ -8,7 +8,7 @@ import logging
 import re
 
 from aiogram import Bot
-from aiogram.types import BotCommand, MenuButtonCommands, MenuButtonWebApp, WebAppInfo
+from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
 
 from config import SUBSCRIPTION_DAYS, SUBSCRIPTION_PRICE_RUB, WEBAPP_URL
 
@@ -27,6 +27,14 @@ def bot_link(username: str) -> str:
 
 def mini_app_url(business_id: int) -> str:
     return f"{WEBAPP_URL}/?business_id={business_id}"
+
+
+CABINET_BUTTON_TEXT = "Кабинет"
+
+
+def cabinet_url() -> str:
+    """Mini App платформенного бота (подписка, оплата, документы) — отдельная от Mini App записи страница."""
+    return f"{WEBAPP_URL}/cabinet"
 
 
 def short_description(name: str) -> str:
@@ -64,6 +72,7 @@ def commands(platform: bool) -> list[BotCommand]:
         return [
             BotCommand(command="start", description="Что такое TeleSlot"),
             BotCommand(command="newbusiness", description="Подключить бизнес"),
+            BotCommand(command="cabinet", description="Кабинет: подписка и документы"),
             BotCommand(command="price", description="Тариф и оплата"),
             BotCommand(command="terms", description="Условия подписки"),
             BotCommand(command="support", description="Поддержка"),
@@ -77,12 +86,12 @@ def commands(platform: bool) -> list[BotCommand]:
 async def configure_bot(bot: Bot, business: dict, platform: bool = False) -> list[str]:
     """Выставляет меню-кнопку, команды и описания. Возвращает названия шагов, которые не удались.
 
-    Платформенный бот (TeleSlot) не показывает Mini App записи — у него нет ни услуг, ни клиентов,
-    только /newbusiness, поэтому меню-кнопка — обычный список команд, а не WebApp."""
+    Платформенный бот (TeleSlot) не показывает Mini App ЗАПИСИ — у него нет ни услуг, ни клиентов, — но у него
+    свой Mini App «Кабинет» (подписка, оплата, документы): меню-кнопка ведёт на него."""
     failed = []
-    menu_button = (
-        MenuButtonCommands() if platform
-        else MenuButtonWebApp(text=MENU_BUTTON_TEXT, web_app=WebAppInfo(url=mini_app_url(business["id"])))
+    menu_button = MenuButtonWebApp(
+        text=CABINET_BUTTON_TEXT if platform else MENU_BUTTON_TEXT,
+        web_app=WebAppInfo(url=cabinet_url() if platform else mini_app_url(business["id"])),
     )
     desc = platform_description(business["name"]) if platform else description(business["name"])
     short_desc = platform_short_description(business["name"]) if platform else short_description(business["name"])

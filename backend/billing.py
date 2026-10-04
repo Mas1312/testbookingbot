@@ -95,6 +95,41 @@ def validate_pre_checkout(payload: str, user_id: int, total_amount: int, currenc
     return True, None
 
 
+def subscription_status(business: dict, now: datetime | None = None) -> tuple[str, int | None]:
+    """('pilot'|'active'|'expiring'|'expired', осталось дней или None). pilot — оплаты ещё не было."""
+    if not business.get("paid_until"):
+        return "pilot", None
+    now = (now or datetime.now(timezone.utc)).replace(tzinfo=None)
+    remaining = datetime.strptime(business["paid_until"], database.DB_TIME_FORMAT) - now
+    if remaining <= timedelta(0):
+        return "expired", 0
+    days_left = remaining.days + (1 if remaining.seconds else 0)
+    return ("expiring" if remaining <= REMIND_BEFORE else "active"), days_left
+
+
+def cabinet_payload(owner_tg_id: int, now: datetime | None = None) -> dict:
+    """Данные для кабинета TeleSlot (Mini App платформенного бота): бизнесы владельца, их подписка, история оплат."""
+    items = []
+    for b in database.get_businesses_by_owner(owner_tg_id, exclude_id=PLATFORM_BUSINESS_ID):
+        status, days_left = subscription_status(b, now)
+        username = b.get("bot_username")
+        items.append({
+            "id": b["id"], "name": b["name"], "bot_username": username,
+            "link": bot_setup.bot_link(username) if username else None,
+            "status": status, "days_left": days_left,
+            "paid_until": format_paid_until(b["paid_until"]) if b.get("paid_until") else None,
+        })
+    history = [{
+        "business_name": p["business_name"], "amount_rub": p["amount"] / 100,
+        "paid_at": format_paid_until(p["created_at"]), "period_to": format_paid_until(p["period_to"]),
+    } for p in database.get_payments_by_owner(owner_tg_id)]
+    return {
+        "businesses": items, "history": history, "payments_enabled": payments_enabled(),
+        "price_rub": SUBSCRIPTION_PRICE_RUB, "days": SUBSCRIPTION_DAYS,
+        "support": bot_setup.SUPPORT_CONTACT,
+    }
+
+
 def subscription_line(business: dict) -> str:
     if business.get("paid_until"):
         return f"«{business['name']}»: оплачено до {format_paid_until(business['paid_until'])}"

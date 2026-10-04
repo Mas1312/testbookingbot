@@ -32,6 +32,22 @@ dp = Dispatcher()
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 
 
+def cabinet_button() -> InlineKeyboardButton:
+    """Кнопка, открывающая кабинет TeleSlot (Mini App платформенного бота)."""
+    return InlineKeyboardButton(text=bot_setup.CABINET_BUTTON_TEXT, web_app=WebAppInfo(url=bot_setup.cabinet_url()))
+
+
+@dp.message(Command("cabinet"))
+async def cmd_cabinet(message: Message, business_id: int):
+    if business_id != PLATFORM_BUSINESS_ID:
+        await message.answer(bot_setup.NOT_PLATFORM_TEXT)
+        return
+    await message.answer(
+        "Кабинет TeleSlot: подписка, оплата и документы.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[cabinet_button()]]),
+    )
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message, business_id: int):
     if business_id == PLATFORM_BUSINESS_ID:
@@ -40,10 +56,13 @@ async def cmd_start(message: Message, business_id: int):
         # приглашение начать /newbusiness. У бизнес-ботов ниже — обычный клиентский /start.
         await message.answer(
             bot_setup.PLATFORM_START_TEXT,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="Подключить бизнес", callback_data="start_newbusiness"),
-                InlineKeyboardButton(text="Тариф", callback_data="show_price"),
-            ]]),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="Подключить бизнес", callback_data="start_newbusiness"),
+                    InlineKeyboardButton(text="Тариф", callback_data="show_price"),
+                ],
+                [cabinet_button()],
+            ]),
         )
         return
 
