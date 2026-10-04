@@ -67,11 +67,23 @@ def receipt_for(business_name: str) -> dict:
     }
 
 
+INVOICE_DESCRIPTION_LIMIT = 255  # лимит Telegram на описание счёта
+
+
+def invoice_description(business_name: str) -> str:
+    """Описание счёта. Оплата — это акцепт оферты (см. оферту, п. 1.3), поэтому ссылка на неё стоит прямо в счёте.
+    Под лимит Telegram подрезаем название бизнеса, а не хвост со ссылкой."""
+    tail = f"»: доступ на {SUBSCRIPTION_DAYS} дней. Оплата означает согласие с офертой: {bot_setup.OFFER_URL}"
+    room = INVOICE_DESCRIPTION_LIMIT - len(tail) - 1  # 1 — открывающая «
+    name = business_name if len(business_name) <= room else business_name[: max(room - 1, 0)] + "…"
+    return f"«{name}{tail}"
+
+
 def invoice_kwargs(business: dict) -> dict:
     """Параметры для Message.answer_invoice. need_email + send_email_to_provider — чтобы чек ушёл покупателю."""
     return dict(
         title="Подписка TeleSlot",
-        description=f"«{business['name']}»: доступ к сервису на {SUBSCRIPTION_DAYS} дней"[:255],
+        description=invoice_description(business["name"]),
         payload=make_payload(business["id"]),
         provider_token=PAYMENT_PROVIDER_TOKEN,
         currency=CURRENCY,
