@@ -2,6 +2,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
+import weekly_schedule
 from config import DB_PATH, DEFAULT_THEME, DEFAULT_SCHEDULE, SEED_DEMO_SERVICES
 
 
@@ -81,6 +82,8 @@ def init_db():
         "paid_until": "TEXT",
         "remind3_for": "TEXT",
         "remind0_for": "TEXT",
+        # График по дням недели (JSON, см. weekly_schedule.py); NULL — все дни с общими часами work_*_hour.
+        "weekly_schedule": "TEXT",
     })
 
     # Платежи за подписку. telegram_charge_id уникален: Telegram может прислать successful_payment
@@ -338,6 +341,21 @@ def record_payment(business_id: int, payer_tg_id: int, amount: int, currency: st
         conn.close()
 
 
+def get_business_stats(business: dict) -> dict:
+    """Короткая сводка для кабинета: новые (неразобранные) заявки и записи на сегодня по часам бизнеса."""
+    today = _now_in_business_tz(business["timezone"]).date().isoformat()
+    conn = get_connection()
+    new_count = conn.execute(
+        "SELECT COUNT(*) FROM bookings WHERE business_id = ? AND status = 'new'", (business["id"],)
+    ).fetchone()[0]
+    today_count = conn.execute(
+        "SELECT COUNT(*) FROM bookings WHERE business_id = ? AND date = ? AND status != 'cancelled'",
+        (business["id"], today),
+    ).fetchone()[0]
+    conn.close()
+    return {"new_bookings": new_count, "today_bookings": today_count}
+
+
 def get_payments_by_owner(owner_tg_id: int, limit: int = 20) -> list[dict]:
     """История оплат по бизнесам владельца (новые сверху) — для кабинета TeleSlot."""
     conn = get_connection()
@@ -552,21 +570,43 @@ SCHEDULE_FIELDS = ("timezone", "work_start_hour", "work_end_hour", "slot_step_mi
 
 
 def get_schedule(business_id: int):
+    """Расписание бизнеса. Кроме общих полей возвращает «weekly» — график по 7 дням недели (всегда полный:
+    если владелец его не задавал, это общие часы на все дни — как было до графика по дням)."""
     business = get_business(business_id)
-    return {k: business[k] for k in SCHEDULE_FIELDS} if business else dict(DEFAULT_SCHEDULE)
+    if not business:
+        schedule = dict(DEFAULT_SCHEDULE)
+        schedule["weekly"] = weekly_schedule.uniform_week(schedule["work_start_hour"], schedule["work_end_hour"])
+        return schedule
+    schedule = {k: business[k] for k in SCHEDULE_FIELDS}
+    schedule["weekly"] = weekly_schedule.load_week(
+        business.get("weekly_schedule"), business["work_start_hour"], business["work_end_hour"]
+    )
+    return schedule
 
 
 def update_schedule(business_id: int, schedule: dict):
+    """Сохраняет расписание. Если передан schedule["weekly"] (проверенный график по дням) — сохраняем его, а
+    work_start_hour/work_end_hour выводим из него (самый ранний старт и самый поздний конец), чтобы старые
+    потребители этих полей не расходились с графиком. Без weekly (мастер первого запуска) — общие часы на все
+    дни: прежний график по дням, если был, сбрасывается."""
+    weekly = schedule.get("weekly")
+    if weekly:
+        start_hour, end_hour = weekly_schedule.legacy_hours(weekly)
+        weekly_json = weekly_schedule.dump_week(weekly)
+    else:
+        start_hour, end_hour = schedule["work_start_hour"], schedule["work_end_hour"]
+        weekly_json = None
     conn = get_connection()
     conn.execute(
         """
         UPDATE businesses
-        SET timezone = ?, work_start_hour = ?, work_end_hour = ?, slot_step_minutes = ?, days_ahead = ?
+        SET timezone = ?, work_start_hour = ?, work_end_hour = ?, slot_step_minutes = ?, days_ahead = ?,
+            weekly_schedule = ?
         WHERE id = ?
         """,
         (
-            schedule["timezone"], schedule["work_start_hour"], schedule["work_end_hour"],
-            schedule["slot_step_minutes"], schedule["days_ahead"], business_id,
+            schedule["timezone"], start_hour, end_hour,
+            schedule["slot_step_minutes"], schedule["days_ahead"], weekly_json, business_id,
         ),
     )
     conn.commit()
@@ -761,7 +801,9 @@ def get_available_dates(business_id: int):
     Europe/Moscow, например, может давать неверную дату ближе к полуночи)."""
     schedule = get_schedule(business_id)
     today = _now_in_business_tz(schedule["timezone"]).date()
-    return [(today + timedelta(days=i)).isoformat() for i in range(schedule["days_ahead"])]
+    days = (today + timedelta(days=i) for i in range(schedule["days_ahead"]))
+    # Выходные дни клиенту не показываем — иначе он выберет день и упрётся в «свободных окон нет».
+    return [d.isoformat() for d in days if weekly_schedule.day_config(schedule["weekly"], d)["open"]]
 
 
 def _slot_overlaps_busy(slot_start_minutes, slot_duration, busy_ranges):
@@ -813,9 +855,20 @@ def get_available_slots(business_id: int, service_id: int, date: str, master_id:
         h, m = map(int, row["time"].split(":"))
         busy_ranges.append((h * 60 + m, row["duration_min"]))
 
+    # Часы берём из графика по дню недели нужной даты: выходной — слотов нет, перерыв считаем занятым временем.
+    try:
+        day_cfg = weekly_schedule.day_config(schedule["weekly"], datetime.strptime(date, "%Y-%m-%d").date())
+    except ValueError:
+        return []
+    if not day_cfg["open"]:
+        return []
+    start_minutes = weekly_schedule.parse_time(day_cfg["start"])
+    end_minutes = weekly_schedule.parse_time(day_cfg["end"])
+    if day_cfg["break_start"]:
+        break_start = weekly_schedule.parse_time(day_cfg["break_start"])
+        busy_ranges.append((break_start, weekly_schedule.parse_time(day_cfg["break_end"]) - break_start))
+
     slots = []
-    start_minutes = schedule["work_start_hour"] * 60
-    end_minutes = schedule["work_end_hour"] * 60
     slot_step = schedule["slot_step_minutes"]
 
     now = _now_in_business_tz(schedule["timezone"])

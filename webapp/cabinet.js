@@ -121,18 +121,34 @@
     if (b.status === "active" || b.status === "expiring") {
       card.append(h("p", { class: "meta", text: `Осталось ${b.days_left} ${daysWord(b.days_left)}` }));
     }
+
+    // Сводка: что требует внимания прямо сейчас.
+    card.append(h("div", { class: "stats" },
+      h("div", { class: `stat${b.new_bookings ? " attention" : ""}` },
+        h("span", { class: "stat-num", text: String(b.new_bookings) }), h("span", { class: "stat-label", text: "новых заявок" })),
+      h("div", { class: "stat" },
+        h("span", { class: "stat-num", text: String(b.today_bookings) }), h("span", { class: "stat-label", text: "записей сегодня" })),
+    ));
+
+    // «Управление» открывает админку этого бизнеса (заявки, услуги, расписание…) прямо здесь, в кабинете;
+    // `from=cabinet` включает там кнопку «Назад в кабинет».
+    card.append(h("button", { class: "btn", type: "button", text: "Управление бизнесом", onclick: () => {
+      location.href = `/?business_id=${b.id}&admin=1&from=cabinet`;
+    } }));
+
+    const urgent = b.status === "expiring" || b.status === "expired";
     if (data.payments_enabled) {
       const label = b.status === "pilot"
         ? `Оплатить ${rub(data.price_rub)} за ${data.days} ${daysWord(data.days)}`
         : `Продлить на ${data.days} ${daysWord(data.days)}: ${rub(data.price_rub)}`;
-      const btn = h("button", { class: "btn", type: "button", text: label });
+      const btn = h("button", { class: urgent ? "btn urgent" : "btn ghost", type: "button", text: label });
       btn.addEventListener("click", () => pay(b, btn));
       card.append(btn);
     } else {
-      card.append(h("p", { class: "meta", text: `Онлайн-оплата скоро заработает. Пока оплатить можно через поддержку: ${data.support}` }));
+      card.append(h("p", { class: "meta", style: "margin-top:10px", text: `Онлайн-оплата скоро заработает. Пока оплатить можно через поддержку: ${data.support}` }));
     }
     if (b.link) {
-      card.append(h("button", { class: "btn ghost", type: "button", text: "Открыть бота и настройки", onclick: () => openTelegram(b.link) }));
+      card.append(h("button", { class: "btn ghost", type: "button", text: "Перейти в бота", onclick: () => openTelegram(b.link) }));
     }
     return card;
   }

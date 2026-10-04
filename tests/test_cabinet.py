@@ -191,6 +191,73 @@ class InvoiceTest(CabinetBase):
         self.assertEqual(ctx.exception.status_code, 502)
 
 
+class ManageFromCabinetTest(CabinetBase):
+    """Управление бизнесом из кабинета: админка открывается в контексте платформенного бота, и initData там
+    подписан токеном ПЛАТФОРМЫ. Сервер должен принять эту подпись у владельца — и только у владельца."""
+
+    def schedule_for(self, init_data):
+        return server.admin_get_schedule(self.client["id"], init_data=init_data)
+
+    def test_owner_with_platform_signature_can_manage(self):
+        self.assertIn("weekly", self.schedule_for(self.signed(OWNER)))
+
+    def test_owner_with_own_business_bot_signature_still_works(self):
+        self.assertIn("weekly", self.schedule_for(sign_init_data(OWNER, self.client["bot_token"])))
+
+    def test_non_owner_with_valid_platform_signature_is_refused(self):
+        with self.assertRaises(HTTPException) as ctx:
+            self.schedule_for(self.signed(STRANGER))
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_signature_from_unrelated_bot_is_refused(self):
+        with self.assertRaises(HTTPException) as ctx:
+            self.schedule_for(sign_init_data(OWNER, "999999999:AAEhBOweik6ad9r_QXMENQjcrTu-NotOurBot"))
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_missing_or_garbage_signature_is_refused(self):
+        for bad in ("", "garbage"):
+            with self.assertRaises(HTTPException) as ctx:
+                self.schedule_for(bad)
+            self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_platform_owner_cannot_manage_other_peoples_business(self):
+        """Оператор платформы — не владелец чужого бизнеса: подпись платформы сама по себе прав не даёт."""
+        with self.assertRaises(HTTPException) as ctx:
+            self.schedule_for(self.signed(OPERATOR))
+        self.assertEqual(ctx.exception.status_code, 403)
+
+
+class BusinessStatsTest(CabinetBase):
+    def test_counts_new_and_todays_bookings(self):
+        service = database.create_service(self.client["id"], "Маникюр", 1500, 60, "slot")
+        tz = database.get_business(self.client["id"])["timezone"]
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo(tz)).date().isoformat()
+        tomorrow = (datetime.now(ZoneInfo(tz)).date() + timedelta(days=1)).isoformat()
+        database.create_booking(self.client["id"], service, "Маникюр", 1500, today, "10:00", "А", 1)
+        database.create_booking(self.client["id"], service, "Маникюр", 1500, tomorrow, "10:00", "Б", 2)
+        cancelled = database.create_booking(self.client["id"], service, "Маникюр", 1500, today, "12:00", "В", 3)
+        database.update_booking_status(self.client["id"], cancelled, "cancelled")
+        item = billing.cabinet_payload(OWNER)["businesses"][0]
+        self.assertEqual(item["new_bookings"], 2)     # отменённая не «новая»
+        self.assertEqual(item["today_bookings"], 1)   # сегодняшняя неотменённая
+
+    def test_no_bookings_gives_zeroes(self):
+        item = billing.cabinet_payload(OWNER)["businesses"][0]
+        self.assertEqual((item["new_bookings"], item["today_bookings"]), (0, 0))
+
+    def test_stats_never_mix_businesses(self):
+        other = database.create_business(OWNER, "Второй", "666666666:AAEhBOweik6ad9r_QXMENQjcrTu-Ge1S3lM")
+        service = database.create_service(other["id"], "Услуга", 100, 30, "slot")
+        tz = database.get_business(other["id"])["timezone"]
+        from zoneinfo import ZoneInfo
+        database.create_booking(other["id"], service, "Услуга", 100, datetime.now(ZoneInfo(tz)).date().isoformat(),
+                                "10:00", "Г", 4)
+        by_id = {b["id"]: b for b in billing.cabinet_payload(OWNER)["businesses"]}
+        self.assertEqual(by_id[self.client["id"]]["new_bookings"], 0)
+        self.assertEqual(by_id[other["id"]]["new_bookings"], 1)
+
+
 class PageTest(unittest.TestCase):
     def test_cabinet_route_serves_cabinet_html(self):
         orig = server.webapp_dir

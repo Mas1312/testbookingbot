@@ -1655,11 +1655,112 @@ async function loadSchedule() {
     business_id: state.businessId,
   })}`);
   el("schedule-timezone").value = schedule.timezone;
-  el("schedule-start").value = schedule.work_start_hour;
-  el("schedule-end").value = schedule.work_end_hour;
   el("schedule-step").value = schedule.slot_step_minutes;
   el("schedule-days").value = schedule.days_ahead;
+  // <input type="time"> не умеет «24:00»: работу «до полуночи» показываем как 23:59.
+  state.admin.weekly = schedule.weekly.map((d) => ({
+    ...d,
+    end: d.end === "24:00" ? "23:59" : d.end,
+    break_end: d.break_end === "24:00" ? "23:59" : d.break_end,
+  }));
+  renderWeekly();
 }
+
+// ---- График по дням недели: у каждого дня свой выходной / часы / перерыв ----
+
+const WEEKDAY_NAMES = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"];
+const DEFAULT_BREAK = { start: "13:00", end: "14:00" };
+
+function timeInput(value, onChange, label) {
+  const input = document.createElement("input");
+  input.type = "time";
+  input.value = value || "";
+  input.setAttribute("aria-label", label);
+  input.addEventListener("change", () => onChange(input.value));
+  return input;
+}
+
+function renderWeekly() {
+  const box = el("weekly-editor");
+  box.innerHTML = "";
+  state.admin.weekly.forEach((day, index) => {
+    const card = document.createElement("div");
+    card.className = "day-card" + (day.open ? "" : " closed");
+
+    const head = document.createElement("label");
+    head.className = "day-head";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = day.open;
+    toggle.addEventListener("change", () => { day.open = toggle.checked; renderWeekly(); });
+    const name = document.createElement("span");
+    name.className = "day-name";
+    name.textContent = WEEKDAY_NAMES[index];
+    const status = document.createElement("span");
+    status.className = "day-status";
+    status.textContent = day.open ? "работаю" : "выходной";
+    head.append(toggle, name, status);
+    card.append(head);
+
+    if (day.open) {
+      const hours = document.createElement("div");
+      hours.className = "time-row";
+      const from = document.createElement("span");
+      from.textContent = "с";
+      const to = document.createElement("span");
+      to.textContent = "до";
+      hours.append(
+        from, timeInput(day.start, (v) => { day.start = v; }, `${WEEKDAY_NAMES[index]}: начало`),
+        to, timeInput(day.end, (v) => { day.end = v; }, `${WEEKDAY_NAMES[index]}: конец`),
+      );
+      card.append(hours);
+
+      const hasBreak = !!(day.break_start && day.break_end);
+      const breakLabel = document.createElement("label");
+      breakLabel.className = "break-toggle";
+      const breakBox = document.createElement("input");
+      breakBox.type = "checkbox";
+      breakBox.checked = hasBreak;
+      breakBox.addEventListener("change", () => {
+        if (breakBox.checked) {
+          // Предлагаем обед 13:00–14:00, но сдвигаем, если он не помещается в рабочие часы.
+          const inside = (t) => day.start && day.end && t >= day.start && t <= day.end;
+          day.break_start = inside(DEFAULT_BREAK.start) ? DEFAULT_BREAK.start : day.start;
+          day.break_end = inside(DEFAULT_BREAK.end) ? DEFAULT_BREAK.end : day.end;
+        } else {
+          day.break_start = null;
+          day.break_end = null;
+        }
+        renderWeekly();
+      });
+      const breakText = document.createElement("span");
+      breakText.textContent = "Перерыв";
+      breakLabel.append(breakBox, breakText);
+      card.append(breakLabel);
+
+      if (hasBreak) {
+        const breakRow = document.createElement("div");
+        breakRow.className = "time-row break-row";
+        const dash = document.createElement("span");
+        dash.textContent = "—";
+        breakRow.append(
+          timeInput(day.break_start, (v) => { day.break_start = v; }, `${WEEKDAY_NAMES[index]}: начало перерыва`),
+          dash,
+          timeInput(day.break_end, (v) => { day.break_end = v; }, `${WEEKDAY_NAMES[index]}: конец перерыва`),
+        );
+        card.append(breakRow);
+      }
+    }
+    box.append(card);
+  });
+}
+
+el("weekly-copy-btn").addEventListener("click", () => {
+  const monday = state.admin.weekly[0];
+  state.admin.weekly = state.admin.weekly.map(() => ({ ...monday }));
+  renderWeekly();
+  toast("Понедельник скопирован на все дни");
+});
 
 el("save-schedule-btn").addEventListener("click", async () => {
   const payload = {
@@ -1667,14 +1768,16 @@ el("save-schedule-btn").addEventListener("click", async () => {
     init_data: state.initData,
     owner_tg_id: state.myTgId,
     timezone: el("schedule-timezone").value,
-    work_start_hour: parseInt(el("schedule-start").value, 10),
-    work_end_hour: parseInt(el("schedule-end").value, 10),
+    weekly: state.admin.weekly.map((d) => ({
+      open: d.open, start: d.start, end: d.end,
+      break_start: d.break_start || null, break_end: d.break_end || null,
+    })),
     slot_step_minutes: parseInt(el("schedule-step").value, 10),
     days_ahead: parseInt(el("schedule-days").value, 10),
   };
 
-  if (payload.work_end_hour <= payload.work_start_hour) {
-    toast("Время закрытия должно быть позже времени открытия");
+  if (isNaN(payload.days_ahead) || payload.days_ahead < 1) {
+    toast("Укажите, на сколько дней вперёд открыта запись");
     return;
   }
 
@@ -1704,6 +1807,19 @@ async function init() {
   await loadServices();
   showScreen("services");
   await maybeStartWizard();
+
+  // Запуск из кабинета TeleSlot: ссылка вида ?business_id=N&admin=1&from=cabinet.
+  if (urlParams.get("from") === "cabinet" && state.isOwner) setupCabinetBack();
+  if (urlParams.get("admin") === "1" && state.isOwner && !state.admin.wizardActive) switchMode("admin");
+}
+
+// Кнопка «назад в кабинет»: и системная кнопка Telegram, и видимая ссылка (на старых клиентах BackButton нет).
+function setupCabinetBack() {
+  el("back-to-cabinet").classList.remove("hidden");
+  try {
+    tg.BackButton.show();
+    tg.BackButton.onClick(() => { location.href = "/cabinet"; });
+  } catch (e) { /* не критично: ссылка в интерфейсе остаётся */ }
 }
 
 init();

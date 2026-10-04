@@ -118,6 +118,7 @@ def cabinet_payload(owner_tg_id: int, now: datetime | None = None) -> dict:
             "link": bot_setup.bot_link(username) if username else None,
             "status": status, "days_left": days_left,
             "paid_until": format_paid_until(b["paid_until"]) if b.get("paid_until") else None,
+            **database.get_business_stats(b),
         })
     history = [{
         "business_name": p["business_name"], "amount_rub": p["amount"] / 100,

@@ -8,7 +8,7 @@
        а скрипт блокирующий — приложение висело бы на белом экране. Обновление: скачать заново с
        https://telegram.org/js/telegram-web-app.js и закоммитить. -->
   <script src="telegram-web-app.js?v=1"></script>
-  <link rel="stylesheet" href="style.css?v=9" />
+  <link rel="stylesheet" href="style.css?v=12" />
 </head>
 <body>
   <!-- Набор иконок (контурные, 24×24): подставляются через <svg class="icon"><use href="#i-имя"/></svg> -->
@@ -33,6 +33,9 @@
   </header>
 
   <div id="app">
+
+    <!-- Возврат в кабинет TeleSlot: виден, только если админку открыли из кабинета (?from=cabinet) -->
+    <a id="back-to-cabinet" class="back-to-cabinet hidden" href="/cabinet"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Кабинет TeleSlot</a>
 
     <!-- Переключатель "Клиент / Админка" — виден только владельцу -->
     <div id="mode-switch" class="mode-switch hidden">
@@ -159,7 +162,7 @@
 
         <div id="wizard-step-2" class="hidden">
           <h1>Когда вы работаете?</h1>
-          <p class="hint theme-intro">Клиенты смогут записываться только на это время. Позже можно изменить во вкладке «Расписание».</p>
+          <p class="hint theme-intro">Клиенты смогут записываться только на это время. Выходные дни, разные часы по дням и перерыв можно настроить потом во вкладке «Расписание».</p>
 
           <div class="field-block">
             <label>Часовой пояс</label>
@@ -511,7 +514,7 @@
       <!-- Расписание работы -->
       <section id="admin-screen-schedule" class="screen hidden">
         <h1>Расписание</h1>
-        <p class="hint theme-intro">Свои рабочие часы и часовой пояс для твоего бизнеса — слоты клиентам считаются по ним.</p>
+        <p class="hint theme-intro">Рабочие дни, часы и перерыв — свои у каждого дня недели. Клиенты видят только рабочие дни, а свободное время считается по этому графику.</p>
 
         <div class="field-block">
           <label>Часовой пояс</label>
@@ -535,15 +538,10 @@
           </select>
         </div>
 
-        <div class="theme-field-grid">
-          <div class="field-block">
-            <label>Открываемся, час</label>
-            <input id="schedule-start" type="number" inputmode="numeric" min="0" max="23" placeholder="9" />
-          </div>
-          <div class="field-block">
-            <label>Закрываемся, час</label>
-            <input id="schedule-end" type="number" inputmode="numeric" min="1" max="24" placeholder="18" />
-          </div>
+        <div class="field-block">
+          <label>График по дням недели</label>
+          <div id="weekly-editor" class="weekly-editor"></div>
+          <button type="button" id="weekly-copy-btn" class="link-btn neutral">Скопировать понедельник на все дни</button>
         </div>
 
         <div class="field-block">
@@ -581,6 +579,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>

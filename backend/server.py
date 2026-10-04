@@ -20,6 +20,7 @@ import bot_setup
 import database
 import notifications
 import share
+import weekly_schedule
 import webhooks
 from templates import NICHE_TEMPLATES, TEMPLATES_BY_ID
 from config import (SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, BOT_TOKEN, DEV_SKIP_INITDATA_CHECK,
@@ -171,11 +172,22 @@ class MastersSettingsRequest(BaseModel):
     owner_tg_id: int | None = None
 
 
+class DayScheduleRequest(BaseModel):
+    open: bool
+    start: str = Field(default="09:00", max_length=5)
+    end: str = Field(default="18:00", max_length=5)
+    break_start: str | None = Field(default=None, max_length=5)
+    break_end: str | None = Field(default=None, max_length=5)
+
+
 class ScheduleRequest(BaseModel):
     business_id: int
     timezone: str
-    work_start_hour: int = Field(ge=0, le=23)
-    work_end_hour: int = Field(ge=1, le=24)
+    # Общие часы (мастер первого запуска) ИЛИ график по дням недели `weekly` (вкладка «Расписание»):
+    # если есть weekly — он главнее, а общие часы выводятся из него.
+    work_start_hour: int | None = Field(default=None, ge=0, le=23)
+    work_end_hour: int | None = Field(default=None, ge=1, le=24)
+    weekly: list[DayScheduleRequest] | None = Field(default=None, max_length=7)
     slot_step_minutes: int = Field(ge=5, le=240)
     days_ahead: int = Field(ge=1, le=60)
     init_data: str = ""
@@ -201,8 +213,17 @@ def check_owner(business: dict, init_data: str, owner_tg_id_fallback: int | None
     бизнеса, см. telegram_auth.verify_init_data): её нельзя подделать, не зная токен бота.
     Присланный клиентом owner_tg_id больше НИКОГДА не считается доказательством сам по
     себе — только как дев-фолбэк вне настоящего Telegram, и только если явно включено
-    DEV_SKIP_INITDATA_CHECK (см. config.py; в проде должно быть выключено)."""
+    DEV_SKIP_INITDATA_CHECK (см. config.py; в проде должно быть выключено).
+
+    Подпись принимаем из ДВУХ мест: от бота самого бизнеса и от платформенного бота TeleSlot. Второе нужно, чтобы
+    владелец мог открыть управление бизнесом прямо из кабинета TeleSlot (там initData подписан токеном платформы).
+    Это не ослабляет защиту: подпись платформы так же надёжно доказывает Telegram user_id, а доступ даёт только
+    совпадение этого id с owner_tg_id бизнеса — чужой id по-прежнему получает 403."""
     verified_user_id = verify_init_data(init_data, business["bot_token"])
+    if verified_user_id is None:
+        platform = database.get_business(PLATFORM_BUSINESS_ID)
+        if platform and platform["id"] != business["id"]:
+            verified_user_id = verify_init_data(init_data, platform["bot_token"])
     if verified_user_id is None:
         if DEV_SKIP_INITDATA_CHECK and owner_tg_id_fallback:
             verified_user_id = owner_tg_id_fallback
@@ -929,14 +950,23 @@ def admin_update_schedule(payload: ScheduleRequest):
     business = resolve_business(payload.business_id)
     check_owner(business, payload.init_data, payload.owner_tg_id)
 
-    if payload.work_end_hour <= payload.work_start_hour:
-        raise HTTPException(status_code=400, detail="Время закрытия должно быть позже времени открытия")
     try:
         ZoneInfo(payload.timezone)
     except ZoneInfoNotFoundError:
         raise HTTPException(status_code=400, detail="Неизвестный часовой пояс")
 
-    database.update_schedule(business["id"], payload.model_dump(exclude={"owner_tg_id", "business_id", "init_data"}))
+    schedule = payload.model_dump(exclude={"owner_tg_id", "business_id", "init_data"})
+    if payload.weekly is not None:
+        error = weekly_schedule.validate_week(schedule["weekly"])
+        if error:
+            raise HTTPException(status_code=400, detail=error)
+    else:
+        if payload.work_start_hour is None or payload.work_end_hour is None:
+            raise HTTPException(status_code=400, detail="Укажите часы работы")
+        if payload.work_end_hour <= payload.work_start_hour:
+            raise HTTPException(status_code=400, detail="Время закрытия должно быть позже времени открытия")
+
+    database.update_schedule(business["id"], schedule)
     return {"ok": True, "schedule": database.get_schedule(business["id"])}
 
 

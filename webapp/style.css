@@ -1319,3 +1319,107 @@ p.center {
 .share-block .add-btn {
   margin-bottom: 10px;
 }
+
+/* ===== Возврат в кабинет TeleSlot (если админку открыли из кабинета) ===== */
+.back-to-cabinet {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 6px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--hint);
+  text-decoration: none;
+}
+
+.back-to-cabinet .icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* ===== График по дням недели (вкладка «Расписание») ===== */
+.weekly-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.day-card {
+  background: var(--surface);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+
+.day-card.closed {
+  opacity: 0.65;
+}
+
+/* Селекторы с .weekly-editor: общее правило `.field-block label` (display:block, мелкий серый шрифт) иначе их перебивает. */
+.weekly-editor .day-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.day-head input[type="checkbox"],
+.break-toggle input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--primary);
+}
+
+.day-name {
+  flex: 1;
+}
+
+.day-status {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--hint);
+}
+
+.time-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  color: var(--hint);
+  font-size: 14px;
+}
+
+.time-row input[type="time"] {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.weekly-editor .break-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--hint);
+  cursor: pointer;
+}
+
+.break-row {
+  margin-top: 8px;
+}
