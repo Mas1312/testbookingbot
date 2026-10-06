@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import time
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -298,13 +300,22 @@ async def on_pay_button(callback: CallbackQuery, business_id: int):
 @dp.pre_checkout_query()
 async def on_pre_checkout(query: PreCheckoutQuery, business_id: int):
     """Telegram ждёт ответа 10 секунд, иначе отменяет платёж: поэтому тут только быстрая проверка."""
+    started = time.monotonic()
     if business_id != PLATFORM_BUSINESS_ID:
-        await query.answer(ok=False, error_message="Оплата здесь недоступна.")
+        ok, error = False, "Оплата здесь недоступна."
+    else:
+        ok, error = billing.validate_pre_checkout(
+            query.invoice_payload, query.from_user.id, query.total_amount, query.currency
+        )
+    try:
+        await query.answer(ok=ok, error_message=error)
+    except TelegramBadRequest:
+        # Запрос уже просрочен: ответить нельзя. Не падаем с 500, иначе Telegram будет досылать мёртвый запрос.
+        logging.warning("pre_checkout_query просрочен: user=%s, обработка %.2f с", query.from_user.id,
+                        time.monotonic() - started)
         return
-    ok, error = billing.validate_pre_checkout(
-        query.invoice_payload, query.from_user.id, query.total_amount, query.currency
-    )
-    await query.answer(ok=ok, error_message=error)
+    logging.info("pre_checkout_query: user=%s ok=%s, ответ за %.2f с", query.from_user.id, ok,
+                 time.monotonic() - started)
 
 
 @dp.message(F.successful_payment)

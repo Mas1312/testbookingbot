@@ -323,6 +323,18 @@ class BotHandlersTest(BillingBase):
         run(bot_module.on_pre_checkout(wrong_bot, business_id=self.client["id"]))
         self.assertFalse(wrong_bot.result[0])
 
+    def test_expired_pre_checkout_does_not_raise(self):
+        # Telegram отвечает «query is too old»: хендлер не должен падать, иначе вебхук отдаст 500 и запрос придёт снова.
+        from aiogram.exceptions import TelegramBadRequest
+        from aiogram.methods import AnswerPreCheckoutQuery
+
+        class Expired(FakeQuery):
+            async def answer(self, ok, error_message=None):
+                raise TelegramBadRequest(method=AnswerPreCheckoutQuery(pre_checkout_query_id="x", ok=True),
+                                         message="query is too old")
+
+        run(bot_module.on_pre_checkout(Expired(billing.make_payload(self.client["id"])), business_id=PLATFORM_ID))
+
     def test_successful_payment_extends_confirms_and_notifies_operator_once(self):
         payment = FakePayment(billing.make_payload(self.client["id"]), "tg-1")
         message = FakeMessage(OWNER, payment)
