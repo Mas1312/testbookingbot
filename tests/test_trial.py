@@ -1,4 +1,4 @@
-"""Пробный период (3 дня) и приостановка записи: статусы, пауза, напоминания, тексты."""
+"""Пробный период (7 дней) и приостановка записи: статусы, пауза, напоминания, тексты."""
 import asyncio
 import os
 import sys
@@ -43,7 +43,7 @@ class TrialBase(BillingBase):
 class CreationTest(TrialBase):
     def test_default_is_three_days_unless_overridden(self):
         if "TRIAL_DAYS" not in os.environ:
-            self.assertEqual(TRIAL_DAYS, 3)
+            self.assertEqual(TRIAL_DAYS, 7)
 
     def test_trial_starts_at_connection(self):
         b = database.create_business(OWNER, "С пробным", "777777777:AAEhBOweik6ad9r_QXMENQjcrTu-Ge1S3lM", trial_days=3)

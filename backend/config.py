@@ -54,7 +54,7 @@ SUBSCRIPTION_PRICE_RUB = int(os.getenv("SUBSCRIPTION_PRICE_RUB", "990"))
 SUBSCRIPTION_DAYS = int(os.getenv("SUBSCRIPTION_DAYS", "30"))
 # Бесплатный пробный период для бизнеса, подключённого через /newbusiness. Потом запись приостанавливается до оплаты.
 # Бизнесы без пробного периода и без оплаты (заведённые раньше) считаются бесплатным пилотом и не отключаются.
-TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "3"))
+TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "7"))
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "booking.db")
 

@@ -233,7 +233,7 @@ def operator_payment_text(result: dict, payer_tg_id: int) -> str:
             f"(владелец {payer_tg_id}), оплачено до {format_paid_until(result['paid_until'])}.")
 
 
-TRIAL_REMIND_BEFORE = timedelta(days=1)  # пробный период короткий (3 дня): предупреждаем за сутки, а не за 3 дня
+TRIAL_REMIND_BEFORE = timedelta(days=1)  # пробный период короткий (7 дней): предупреждаем за сутки, а не за 3 дня
 
 
 def reminder_text(business: dict, kind: str, end: str | None = None, trial: bool = False) -> str:
