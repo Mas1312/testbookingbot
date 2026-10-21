@@ -17,6 +17,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import database
 import webhooks
+from tg_session import RetrySession
 
 # Допустимые переходы статусов для кнопок в чате. Из админки Mini App можно выставить
 # любой статус (там владелец видит полный список и сам отвечает за выбор).
@@ -43,7 +44,7 @@ def get_bot(business: dict) -> Bot:
     if bot is None:
         bot = _extra_bots.get(business["id"])
     if bot is None:
-        bot = Bot(token=business["bot_token"])
+        bot = Bot(token=business["bot_token"], session=RetrySession())
         _extra_bots[business["id"]] = bot
     return bot
 

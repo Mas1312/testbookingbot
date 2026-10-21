@@ -9,6 +9,7 @@ import logging
 from aiogram import Bot
 
 from config import USE_WEBHOOK, WEBAPP_URL
+from tg_session import RetrySession
 
 # business_id -> aiogram.Bot, создаются один раз и переиспользуются на каждый
 # входящий вебхук-запрос (чтобы не открывать новую aiohttp-сессию на запрос).
@@ -31,7 +32,7 @@ async def register_webhook(business: dict):
     локальная разработка) ничего не делает — там бот работает через polling."""
     if not USE_WEBHOOK:
         return
-    bot_instance = Bot(token=business["bot_token"])
+    bot_instance = Bot(token=business["bot_token"], session=RetrySession())
     bots_by_business[business["id"]] = bot_instance
     try:
         async with asyncio.timeout(15):
