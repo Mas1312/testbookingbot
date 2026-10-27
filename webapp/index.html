@@ -227,6 +227,7 @@
 
       <!-- Список заявок -->
       <section id="admin-screen-orders" class="screen">
+        <button id="add-manual-btn" class="add-btn">+ Новая запись</button>
         <div class="filter-row">
           <button class="filter-pill active" data-status="">Все</button>
           <button class="filter-pill" data-status="new">Новые</button>
@@ -236,6 +237,51 @@
         </div>
         <div id="orders-list" class="list"></div>
         <p id="no-orders-msg" class="hint hidden">Заявок пока нет.</p>
+      </section>
+
+      <!-- Ручная запись владельцем -->
+      <section id="admin-screen-manual" class="screen hidden">
+        <button class="back-btn" data-back="admin-orders"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Назад</button>
+        <h1>Новая запись</h1>
+        <p class="hint">Для клиента, который записался по телефону или лично. Ему в Telegram ничего не отправляется.</p>
+
+        <div class="field-block">
+          <label>Услуга</label>
+          <select id="manual-service"></select>
+        </div>
+
+        <div id="manual-master-block" class="field-block hidden">
+          <label>Мастер</label>
+          <select id="manual-master"></select>
+        </div>
+
+        <div class="field-block">
+          <label>Дата</label>
+          <select id="manual-date"></select>
+        </div>
+
+        <div class="field-block">
+          <label>Время</label>
+          <select id="manual-time"></select>
+          <p id="manual-no-slots" class="hint hidden">На эту дату свободного времени нет — выберите другую.</p>
+        </div>
+
+        <div class="field-block">
+          <label>Имя клиента</label>
+          <input id="manual-name" type="text" maxlength="80" placeholder="Например: Анна" />
+        </div>
+
+        <div class="field-block">
+          <label>Телефон (необязательно)</label>
+          <input id="manual-phone" type="tel" maxlength="40" placeholder="+7 900 123-45-67" />
+        </div>
+
+        <div class="field-block">
+          <label>Комментарий (необязательно)</label>
+          <input id="manual-comment" type="text" maxlength="300" />
+        </div>
+
+        <button id="save-manual-btn" class="primary-btn">Записать</button>
       </section>
 
       <!-- Список позиций + форма добавления -->
@@ -585,6 +631,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=13"></script>
+  <script src="app.js?v=14"></script>
 </body>
 </html>

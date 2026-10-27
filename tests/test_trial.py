@@ -41,7 +41,7 @@ class TrialBase(BillingBase):
 
 
 class CreationTest(TrialBase):
-    def test_default_is_three_days_unless_overridden(self):
+    def test_default_is_seven_days_unless_overridden(self):
         if "TRIAL_DAYS" not in os.environ:
             self.assertEqual(TRIAL_DAYS, 7)
 

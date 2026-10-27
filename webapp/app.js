@@ -85,6 +85,7 @@ const screens = {
 
 const adminScreens = {
   orders: el("admin-screen-orders"),
+  manual: el("admin-screen-manual"),
   services: el("admin-screen-services"),
   "service-form": el("admin-screen-service-form"),
   masters: el("admin-screen-masters"),
@@ -880,6 +881,120 @@ async function updateOrderStatus(id, status) {
   });
   loadAdminOrders();
 }
+
+// ======================================================================
+// АДМИН-РЕЖИМ: ручная запись владельцем
+// ======================================================================
+
+const manualMaster = () => (el("manual-master-block").classList.contains("hidden") ? null : Number(el("manual-master").value) || null);
+
+el("add-manual-btn").addEventListener("click", openManualForm);
+
+async function openManualForm() {
+  let services;
+  try {
+    services = (await api(`/api/admin/services?${qs(adminAuth())}`)).filter((s) => s.type === "slot");
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  if (services.length === 0) {
+    toast("Сначала добавьте услугу по расписанию");
+    return;
+  }
+  const select = el("manual-service");
+  select.innerHTML = services.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
+  ["manual-name", "manual-phone", "manual-comment"].forEach((id) => { el(id).value = ""; });
+
+  const dates = await api(`/api/dates?${qs({ business_id: state.businessId })}`);
+  el("manual-date").innerHTML = dates.map((d) => {
+    const { top, weekday } = formatDateLabel(d);
+    return `<option value="${d}">${weekday}, ${top}</option>`;
+  }).join("");
+
+  await refreshManualMasters();
+  showAdminScreen("manual");
+}
+
+async function refreshManualMasters() {
+  const serviceId = Number(el("manual-service").value);
+  const block = el("manual-master-block");
+  const select = el("manual-master");
+  let masters = [];
+  try {
+    const data = await api(`/api/admin/masters?${qs(adminAuth())}`);
+    if (data.use_masters) {
+      masters = data.masters.filter((m) => m.is_active && (m.service_ids.length === 0 || m.service_ids.includes(serviceId)));
+    }
+  } catch (e) {
+    toast(e.message);
+  }
+  select.innerHTML = masters.map((m) => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join("");
+  block.classList.toggle("hidden", masters.length === 0);
+  await refreshManualSlots();
+}
+
+async function refreshManualSlots() {
+  const timeSelect = el("manual-time");
+  const date = el("manual-date").value;
+  timeSelect.innerHTML = "";
+  if (!date) return;
+  let slots = [];
+  try {
+    slots = await api(`/api/slots?${qs({
+      service_id: el("manual-service").value,
+      date,
+      business_id: state.businessId,
+      master_id: manualMaster(),
+    })}`);
+  } catch (e) {
+    toast(e.message);
+  }
+  timeSelect.innerHTML = slots.map((t) => `<option value="${t}">${t}</option>`).join("");
+  el("manual-no-slots").classList.toggle("hidden", slots.length > 0);
+}
+
+el("manual-service").addEventListener("change", refreshManualMasters);
+el("manual-master").addEventListener("change", refreshManualSlots);
+el("manual-date").addEventListener("change", refreshManualSlots);
+
+el("save-manual-btn").addEventListener("click", async () => {
+  const name = el("manual-name").value.trim();
+  const time = el("manual-time").value;
+  if (!name) {
+    toast("Укажите имя клиента");
+    return;
+  }
+  if (!time) {
+    toast("Выберите время");
+    return;
+  }
+  const btn = el("save-manual-btn");
+  btn.disabled = true;
+  try {
+    await api("/api/admin/bookings", {
+      method: "POST",
+      body: JSON.stringify({
+        ...adminAuth(),
+        service_id: Number(el("manual-service").value),
+        master_id: manualMaster(),
+        date: el("manual-date").value,
+        time,
+        client_name: name,
+        client_phone: el("manual-phone").value.trim() || null,
+        comment: el("manual-comment").value.trim() || null,
+      }),
+    });
+    toast("Запись добавлена");
+    showAdminScreen("orders");
+    loadAdminOrders();
+  } catch (e) {
+    toast(e.message);
+    refreshManualSlots(); // время могли занять, пока форма была открыта
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // ======================================================================
 // АДМИН-РЕЖИМ: позиции (услуги/товары)

@@ -86,6 +86,20 @@ class BookingRequest(BaseModel):
     consent: bool = False            # согласие на обработку ПДн (обязательно, если указан телефон)
 
 
+class ManualBookingRequest(BaseModel):
+    """Запись, которую владелец вносит сам (клиент позвонил, написал в личку, пришёл без записи)."""
+    business_id: int
+    service_id: int
+    master_id: int | None = None     # обязателен, если у бизнеса включён выбор мастера
+    date: str
+    time: str
+    client_name: str = Field(min_length=1, max_length=80)
+    client_phone: str | None = Field(default=None, max_length=40)
+    comment: str | None = Field(default=None, max_length=300)
+    init_data: str = ""              # подпись Telegram WebApp — см. check_owner
+    owner_tg_id: int | None = None   # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
+
+
 class CancelRequest(BaseModel):
     business_id: int
     init_data: str = ""              # подпись Telegram WebApp — из неё берём id клиента
@@ -734,6 +748,42 @@ def admin_list_bookings(business_id: int, init_data: str = "", owner_tg_id: int 
     business = resolve_business(business_id)
     check_owner(business, init_data, owner_tg_id)
     return database.get_all_bookings(business["id"], status=status)
+
+
+@app.post("/api/admin/bookings")
+def admin_create_booking(payload: ManualBookingRequest):
+    """Ручная запись владельцем. Идёт через ту же проверку «время свободно» в одной транзакции, что и запись клиента
+    (create_booking_checked), поэтому с клиентскими записями не конфликтует. Сразу «подтверждена»; клиент не из Telegram
+    (client_tg_id пустой), значит ни владельцу, ни клиенту уведомления и напоминания не уходят — владелец и так знает."""
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    service = database.get_service(business["id"], payload.service_id)
+    if not service:
+        raise HTTPException(status_code=404, detail="Позиция не найдена")
+    if service["type"] != "slot":
+        raise HTTPException(status_code=400, detail="Ручная запись доступна для услуг по расписанию")
+    if payload.date not in database.get_available_dates(business["id"]):
+        raise HTTPException(status_code=400, detail="Выберите рабочий день из доступных дат")
+    master = resolve_master(business, service, payload.master_id)
+    name = clean_text(payload.client_name)
+    if not name:
+        raise HTTPException(status_code=400, detail="Укажите имя клиента")
+    phone = None
+    if (payload.client_phone or "").strip():
+        phone = normalize_phone(payload.client_phone)
+        if not phone:
+            raise HTTPException(status_code=400, detail="Проверьте номер телефона")
+    booking_id = database.create_booking_checked(
+        business["id"], service["id"], service["name"], service["price"], payload.date, payload.time,
+        name, None,
+        comment=clean_text(payload.comment),
+        master_id=master["id"] if master else None, master_name=master["name"] if master else None,
+        client_phone=phone,
+    )
+    if booking_id is None:
+        raise HTTPException(status_code=409, detail="Это время уже занято, выберите другое")
+    database.update_booking_status(business["id"], booking_id, "confirmed")
+    return {"ok": True, "booking_id": booking_id}
 
 
 @app.patch("/api/admin/bookings/{booking_id}")
