@@ -903,7 +903,7 @@ async function openManualForm() {
     return;
   }
   const select = el("manual-service");
-  select.innerHTML = services.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
+  select.innerHTML = services.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}${s.is_active ? "" : " (скрыта)"}</option>`).join("");
   ["manual-name", "manual-phone", "manual-comment"].forEach((id) => { el(id).value = ""; });
 
   const dates = await api(`/api/dates?${qs({ business_id: state.businessId })}`);
@@ -1038,6 +1038,7 @@ function openServiceForm(service) {
   el("service-price").value = service ? service.price : "";
   el("service-duration").value = service ? service.duration_min : "";
   el("service-desc").value = service && service.description ? service.description : "";
+  el("service-active").checked = service ? !!service.is_active : true;
   state.admin.serviceImage = service && service.image_id && safeMediaUrl(service.image_url)
     ? { id: service.image_id, url: service.image_url }
     : null;
@@ -1082,7 +1083,7 @@ el("save-service-btn").addEventListener("click", async () => {
     name, price, duration_min: duration, type,
     description: el("service-desc").value.trim() || null,
     image_id: state.admin.serviceImage ? state.admin.serviceImage.id : null,
-    is_active: true, init_data: state.initData, owner_tg_id: state.myTgId, business_id: state.businessId,
+    is_active: el("service-active").checked, init_data: state.initData, owner_tg_id: state.myTgId, business_id: state.businessId,
   };
 
   try {
@@ -1916,8 +1917,21 @@ el("save-schedule-btn").addEventListener("click", async () => {
 // СТАРТ
 // ======================================================================
 
+function showLoadError() {
+  el("load-error").classList.remove("hidden");
+  el("client-mode").classList.add("hidden");
+  el("brand-name").textContent = "TeleSlot";
+}
+
+el("load-retry-btn").addEventListener("click", () => location.reload());
+
 async function init() {
-  state.config = await api(`/api/config?${qs({ business_id: state.businessId })}`);
+  try {
+    state.config = await api(`/api/config?${qs({ business_id: state.businessId })}`);
+  } catch (e) {
+    showLoadError();
+    return;
+  }
   state.businessId = state.config.business_id; // синхронизируем с тем, что реально отдал бэкенд (если в URL параметра не было)
   applyTheme(state.config.theme);
   applyBrand(state.config.business_name, state.config.logo_url);
@@ -1928,7 +1942,12 @@ async function init() {
 
   setupModeSwitch();
   setupSuspendedBanner();
-  await loadServices();
+  try {
+    await loadServices();
+  } catch (e) {
+    showLoadError();
+    return;
+  }
   showScreen("services");
   await maybeStartWizard();
 

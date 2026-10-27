@@ -34,6 +34,13 @@
 
   <div id="app">
 
+    <!-- Не загрузился конфиг/список услуг (нет связи, сервер не ответил) -->
+    <div id="load-error" class="hidden">
+      <h1>Не удалось загрузить</h1>
+      <p class="hint">Проверьте подключение к интернету и попробуйте ещё раз.</p>
+      <button id="load-retry-btn" class="primary-btn" type="button">Повторить</button>
+    </div>
+
     <!-- Запись приостановлена (пробный период или подписка закончились): баннер видит только владелец -->
     <div id="suspended-banner" class="suspended-banner hidden">
       <p><b>Запись для клиентов приостановлена.</b> Закончился пробный период или оплаченный срок. Оплатите подписку в «Кабинете» TeleSlot: после оплаты запись заработает сразу.</p>
@@ -337,6 +344,11 @@
           <input id="service-duration" type="number" inputmode="numeric" placeholder="30" />
         </div>
 
+        <label class="toggle-row">
+          <input type="checkbox" id="service-active" checked />
+          <span><b>Показывать клиентам</b><small>Если снять — позиция скрыта от клиентов, но остаётся у вас и в истории записей. Новые записи на неё не принимаются.</small></span>
+        </label>
+
         <button id="save-service-btn" class="primary-btn">Сохранить</button>
         <button id="delete-service-btn" class="danger-btn hidden">Удалить позицию</button>
       </section>
@@ -631,6 +643,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=14"></script>
+  <script src="app.js?v=15"></script>
 </body>
 </html>

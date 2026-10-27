@@ -498,7 +498,8 @@ def api_book(booking: BookingRequest, background_tasks: BackgroundTasks):
         # Клиенту про оплату не говорим — это дело владельца; владелец узнаёт из напоминаний, кабинета и баннера.
         raise HTTPException(status_code=403, detail="Запись временно недоступна. Попробуйте позже")
     service = database.get_service(business["id"], booking.service_id)
-    if not service:
+    # Скрытую владельцем позицию принимать нельзя: клиент мог открыть Mini App ещё до того, как её скрыли.
+    if not service or not service["is_active"]:
         raise HTTPException(status_code=404, detail="Позиция не найдена")
 
     master = resolve_master(business, service, booking.master_id)

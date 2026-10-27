@@ -243,6 +243,9 @@ def init_db():
         # Телефон клиента (нормализованный, +7...) и момент согласия на обработку ПДн.
         "client_phone": "TEXT",
         "consent_at": "TEXT",
+        # Длительность позиции на момент брони: занятое время не должно «освобождаться», если позицию удалили
+        # или изменили. NULL у старых записей — для них длительность берём из самой позиции, как раньше.
+        "duration_min": "INTEGER",
     })
 
     conn.commit()
@@ -893,11 +896,13 @@ def get_available_slots(business_id: int, service_id: int, date: str, master_id:
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
+    # LEFT JOIN: запись удалённой позиции по-прежнему занимает время (длительность — из снимка в самой записи).
     busy_query = """
-        SELECT b.time, s.duration_min
+        SELECT b.time, COALESCE(b.duration_min, s.duration_min) AS duration_min
         FROM bookings b
-        JOIN services s ON s.id = b.service_id
-        WHERE b.business_id = ? AND b.date = ? AND b.status != 'cancelled' AND s.type = 'slot'
+        LEFT JOIN services s ON s.id = b.service_id
+        WHERE b.business_id = ? AND b.date = ? AND b.time IS NOT NULL AND b.status != 'cancelled'
+          AND (s.id IS NULL OR s.type = 'slot')
     """
     busy_params = [business_id, date]
     if master_id is not None:
@@ -910,7 +915,8 @@ def get_available_slots(business_id: int, service_id: int, date: str, master_id:
     busy_ranges = []
     for row in busy_rows:
         h, m = map(int, row["time"].split(":"))
-        busy_ranges.append((h * 60 + m, row["duration_min"]))
+        # Нет ни снимка, ни позиции (запись удалённой позиции, сделанная до появления снимка): считаем один шаг сетки.
+        busy_ranges.append((h * 60 + m, row["duration_min"] or schedule["slot_step_minutes"]))
 
     # Часы берём из графика по дню недели нужной даты: выходной — слотов нет, перерыв считаем занятым временем.
     try:
@@ -971,6 +977,8 @@ def create_booking_checked(business_id, service_id, service_name, price, date, t
     на запись (BEGIN IMMEDIATE). Без этого два клиента, нажавших «Записаться» на одно время
     одновременно, оба проходили проверку и получали одну и ту же запись.
     Возвращает id заявки или None, если время уже занято."""
+    service = get_service(business_id, service_id)
+    duration_min = service["duration_min"] if service else None
     conn = get_connection()
     conn.isolation_level = None  # транзакцией управляем вручную
     try:
@@ -981,11 +989,11 @@ def create_booking_checked(business_id, service_id, service_name, price, date, t
         cur = conn.execute(
             """
             INSERT INTO bookings (business_id, service_id, service_name, price, client_name, client_tg_id, date, time,
-                                  quantity, comment, master_id, master_name, client_phone, consent_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  quantity, comment, master_id, master_name, client_phone, consent_at, duration_min)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment,
-             master_id, master_name, client_phone, consent_at),
+             master_id, master_name, client_phone, consent_at, duration_min),
         )
         booking_id = cur.lastrowid
         conn.execute("COMMIT")
