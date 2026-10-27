@@ -178,6 +178,17 @@ def init_db():
         )
     """)
 
+    # Название бизнеса, которое владелец ввёл перед созданием бота через «управляемых ботов» Telegram: событие о новом
+    # боте приходит позже и без названия. Одна строка на владельца (новая попытка заменяет прежнюю).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_managed_bots (
+            owner_tg_id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            suggested_username TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     # Сохранённые владельцем варианты оформления. bg_image_id вынесен в колонку, чтобы
     # знать, какие картинки ещё нужны (см. delete_media_if_unused).
     cur.execute("""
@@ -462,6 +473,42 @@ def get_business_by_bot_token(bot_token: str):
     ).fetchone()
     conn.close()
     return _business_dict(row) if row else None
+
+
+def get_business_by_bot_username(username: str):
+    """Бизнес по username бота (без @, регистр не важен) — для событий Telegram, где токена ещё нет."""
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM businesses WHERE lower(bot_username) = lower(?)", (username,)).fetchone()
+    conn.close()
+    return _business_dict(row) if row else None
+
+
+def save_pending_managed_bot(owner_tg_id: int, name: str, suggested_username: str | None):
+    conn = get_connection()
+    conn.execute(
+        "INSERT OR REPLACE INTO pending_managed_bots (owner_tg_id, name, suggested_username, created_at)"
+        " VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+        (owner_tg_id, name, suggested_username),
+    )
+    conn.commit()
+    conn.close()
+
+
+def pop_pending_managed_bot(owner_tg_id: int, max_age_hours: int = 24) -> str | None:
+    """Название, введённое владельцем перед созданием бота, или None (не вводил / устарело). Запись удаляется."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT name, created_at FROM pending_managed_bots WHERE owner_tg_id = ?", (owner_tg_id,)
+    ).fetchone()
+    conn.execute("DELETE FROM pending_managed_bots WHERE owner_tg_id = ?", (owner_tg_id,))
+    conn.commit()
+    conn.close()
+    if not row:
+        return None
+    created = datetime.strptime(row["created_at"], DB_TIME_FORMAT)
+    if datetime.utcnow() - created > timedelta(hours=max_age_hours):
+        return None
+    return row["name"]
 
 
 THEME_FIELDS = (

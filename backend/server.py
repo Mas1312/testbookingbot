@@ -25,6 +25,7 @@ import webhooks
 from templates import NICHE_TEMPLATES, TEMPLATES_BY_ID
 from config import (SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, BOT_TOKEN, DEV_SKIP_INITDATA_CHECK,
                     PLATFORM_BUSINESS_ID)
+import bot as tg_bot
 from bot import dp as tg_dp
 from telegram_auth import verify_init_data
 
@@ -427,6 +428,15 @@ async def telegram_webhook(business_id: int, request: Request):
     if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != expected_secret:
         raise HTTPException(status_code=403, detail="Неверный секрет вебхука")
     data = await request.json()
+    if "managed_bot" in data:
+        # Новый бот, созданный владельцем по нашей ссылке (только у платформенного бота). aiogram этой версии такой
+        # тип обновления не знает, поэтому разбираем сами; сбой не должен превращаться в 500 и бесконечные повторы.
+        if business_id == PLATFORM_BUSINESS_ID:
+            try:
+                await tg_bot.handle_managed_bot_update(bot_instance, data)
+            except Exception:
+                logging.exception("managed_bot: сбой обработки")
+        return {"ok": True}
     update = Update.model_validate(data, context={"bot": bot_instance})
     await tg_dp.feed_update(bot_instance, update, business_id=business_id)
     return {"ok": True}

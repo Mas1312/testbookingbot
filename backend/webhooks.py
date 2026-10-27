@@ -8,7 +8,7 @@ import logging
 
 from aiogram import Bot
 
-from config import USE_WEBHOOK, WEBAPP_URL
+from config import PLATFORM_BUSINESS_ID, USE_WEBHOOK, WEBAPP_URL
 from tg_session import RetrySession
 
 # business_id -> aiogram.Bot, создаются один раз и переиспользуются на каждый
@@ -19,6 +19,13 @@ bots_by_business: dict[int, Bot] = {}
 # pre_checkout_query нужен для оплаты подписки в платформенном боте: без него Telegram не спросит нас
 # о подтверждении платежа, и оплата не пройдёт. successful_payment приходит внутри "message".
 ALLOWED_UPDATES = ["message", "callback_query", "pre_checkout_query"]
+
+
+def allowed_updates_for(business_id: int) -> list[str]:
+    """Платформенному боту ещё нужно managed_bot: событие о боте, которого владелец создал по нашей ссылке."""
+    if business_id == PLATFORM_BUSINESS_ID:
+        return ALLOWED_UPDATES + ["managed_bot"]
+    return ALLOWED_UPDATES
 
 
 def webhook_secret_for(bot_token: str) -> str:
@@ -42,7 +49,7 @@ async def register_webhook(business: dict):
                 # Задаём явно: иначе Telegram оставляет прежнее значение, а оно могло
                 # остаться от старого polling-а (aiogram выставляет allowed_updates по
                 # имеющимся хендлерам — тогда было только "message" и кнопки не доходили).
-                allowed_updates=ALLOWED_UPDATES,
+                allowed_updates=allowed_updates_for(business["id"]),
                 drop_pending_updates=True,
             )
     except Exception:

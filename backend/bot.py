@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import time
 
@@ -7,12 +8,14 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.base import StorageKey
 from aiogram.types import (CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, PreCheckoutQuery,
                            WebAppInfo)
 
 import billing
 import bot_setup
 import database
+import managed_bots
 import notifications
 import webhooks
 from tg_session import RetrySession
@@ -370,10 +373,36 @@ async def process_business_name(message: Message, state: FSMContext):
     if not name:
         await message.answer("Название не может быть пустым. Напиши текстом, или /cancel.")
         return
+    name = name[:80]
 
-    await state.update_data(business_name=name[:80])
+    await state.update_data(business_name=name)
+    # Состояние то же, что и в старом сценарии: токен, присланный сразу, тоже принимается.
     await state.set_state(NewBusinessStates.waiting_token)
-    await message.answer(bot_setup.ask_token_text(name[:80]), disable_web_page_preview=True)
+
+    platform = database.get_business(PLATFORM_BUSINESS_ID)
+    manager_username = platform["bot_username"] if platform else None
+    if manager_username and await managed_bots.available(message.bot):
+        username = managed_bots.suggest_username(name)
+        database.save_pending_managed_bot(message.from_user.id, name, username)
+        link = managed_bots.newbot_link(manager_username, username, name)
+        await message.answer(
+            bot_setup.managed_offer_text(name),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=bot_setup.MANAGED_BUTTON_TEXT, url=link)],
+                [InlineKeyboardButton(text=bot_setup.HAVE_TOKEN_BUTTON_TEXT, callback_data="have_token")],
+            ]),
+        )
+        return
+    await message.answer(bot_setup.ask_token_text(name), disable_web_page_preview=True)
+
+
+@dp.callback_query(F.data == "have_token", NewBusinessStates.waiting_token)
+async def on_have_token_button(callback: CallbackQuery, state: FSMContext):
+    """«У меня уже есть бот»: прежний сценарий, ждём токен от BotFather."""
+    await callback.answer()
+    data = await state.get_data()
+    if callback.message and data.get("business_name"):
+        await callback.message.answer(bot_setup.ask_token_text(data["business_name"]), disable_web_page_preview=True)
 
 
 @dp.message(NewBusinessStates.waiting_token)
@@ -407,15 +436,48 @@ async def process_bot_token(message: Message, state: FSMContext):
     business_name = data["business_name"]
     owner_tg_id = message.from_user.id
 
-    # Бесплатный пробный период стартует с подключения; потом запись приостановится до оплаты (billing.is_suspended).
-    business = database.create_business(owner_tg_id, business_name, token, trial_days=TRIAL_DAYS)
-    database.set_bot_username(business["id"], me.username)
     await state.clear()
-    await webhooks.register_webhook(business)
-    await bot_setup.configure_business_bot(business)
+    await bot_setup.connect_business(owner_tg_id, business_name, token, me.username)
 
     await message.answer(bot_setup.done_text(business_name, me.username, trial_days=TRIAL_DAYS),
                          disable_web_page_preview=True)
+
+
+async def handle_managed_bot_update(platform_bot: Bot, data: dict):
+    """Владелец создал бота по нашей ссылке (см. managed_bots.py): забираем токен и подключаем бизнес так же, как при
+    /newbusiness. Повторная доставка того же события безопасна: бот уже подключён, ничего не делаем."""
+    parsed = managed_bots.parse_update(data)
+    if parsed is None:
+        logging.warning("managed_bot: незнакомый формат обновления")
+        return
+    creator_id, bot_id, username, first_name = parsed
+    if username and database.get_business_by_bot_username(username):
+        # Telegram шлёт managed_bot и при смене токена/владельца уже подключённого бота; пока только фиксируем.
+        logging.info("managed_bot: бот @%s уже подключён, пропускаем", username)
+        return
+    try:
+        token = await platform_bot(managed_bots.GetManagedBotToken(user_id=bot_id))
+    except Exception:
+        logging.exception("managed_bot: не удалось получить токен бота %s", bot_id)
+        await notifications._safe_send(platform_bot, creator_id, html.escape(bot_setup.MANAGED_FAILED_TEXT))
+        return
+    if database.get_business_by_bot_token(token):
+        return
+    if not username:
+        candidate = Bot(token=token, session=RetrySession())
+        try:
+            username = (await candidate.get_me()).username
+        finally:
+            await candidate.session.close()
+    name = (database.pop_pending_managed_bot(creator_id) or first_name or username or "Мой бизнес")[:80]
+    await bot_setup.connect_business(creator_id, name, token, username)
+    # Диалог /newbusiness закончен: иначе следующее сообщение владельца приняли бы за токен.
+    key = StorageKey(bot_id=platform_bot.id, chat_id=creator_id, user_id=creator_id)
+    await FSMContext(storage=dp.storage, key=key).clear()
+    await notifications._safe_send(
+        platform_bot, creator_id, html.escape(bot_setup.done_text(name, username, trial_days=TRIAL_DAYS)),
+        disable_web_page_preview=True,
+    )
 
 
 @dp.message()

@@ -10,6 +10,8 @@ import re
 from aiogram import Bot
 from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
 
+import database
+import webhooks
 from tg_session import RetrySession
 from config import SUBSCRIPTION_DAYS, SUBSCRIPTION_PRICE_RUB, TRIAL_DAYS, WEBAPP_URL
 
@@ -120,7 +122,38 @@ async def configure_business_bot(business: dict, platform: bool = False) -> list
         await bot.session.close()
 
 
+async def connect_business(owner_tg_id: int, name: str, token: str, username: str | None) -> dict:
+    """Общий шаг подключения бизнеса (токен от BotFather или бот, созданный через «управляемых ботов»): запись в БД с
+    пробным периодом, вебхук и настройка бота (меню, команды, описание). Бесплатный пробный период стартует с
+    подключения; потом запись приостановится до оплаты (billing.is_suspended)."""
+    business = database.create_business(owner_tg_id, name, token, trial_days=TRIAL_DAYS)
+    database.set_bot_username(business["id"], username)
+    await webhooks.register_webhook(business)
+    await configure_business_bot(business)
+    return business
+
+
 # ---------------- Тексты онбординга ----------------
+
+MANAGED_BUTTON_TEXT = "Создать бота автоматически"
+HAVE_TOKEN_BUTTON_TEXT = "У меня уже есть бот"
+
+
+def managed_offer_text(name: str) -> str:
+    return (
+        f"Принял: «{name}».\n\n"
+        "Теперь создадим вашего бота: через него клиенты будут записываться. Нажмите кнопку ниже: Telegram покажет окно "
+        "создания бота, название и адрес уже подставлены, при желании поправьте их и подтвердите. Дальше я всё "
+        "подключу сам, ничего копировать не нужно.\n\n"
+        "Адрес бота (username) должен оканчиваться на bot. Если бот у вас уже есть, нажмите «У меня уже есть бот».\n\n"
+        "Отмена — /cancel"
+    )
+
+
+MANAGED_FAILED_TEXT = (
+    "Бот создан, но подключить его автоматически не получилось. Отправьте /newbusiness и подключите бота по токену "
+    "от @BotFather (или напишите в поддержку, поможем)."
+)
 
 def ask_token_text(name: str) -> str:
     return (
