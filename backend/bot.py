@@ -407,6 +407,10 @@ async def on_have_token_button(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(NewBusinessStates.waiting_token)
 async def process_bot_token(message: Message, state: FSMContext):
+    # Служебное сообщение Telegram «создал бота ...» приходит в чат сразу после создания бота по нашей ссылке; это не
+    # токен. Подключение идёт по отдельному событию managed_bot (handle_managed_bot_update), здесь молчим.
+    if getattr(message, "managed_bot_created", None):
+        return
     token = (message.text or "").strip()
 
     if not bot_setup.looks_like_token(token):

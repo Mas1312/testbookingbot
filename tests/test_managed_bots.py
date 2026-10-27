@@ -367,6 +367,33 @@ class OnboardingStepTest(DbBase):
         self.assertEqual(sent, [bot_setup.ask_token_text("Салон")])
 
 
+class ServiceMessageTest(unittest.TestCase):
+    def test_bot_created_service_message_is_not_taken_for_a_token(self):
+        """Telegram присылает в чат «создал бота ...» (managed_bot_created): раньше бот отвечал «это не похоже на токен»."""
+        from aiogram.types import Message
+        message = Message.model_validate({
+            "message_id": 1, "date": 0, "chat": {"id": CREATOR, "type": "private"},
+            "from": {"id": CREATOR, "is_bot": False, "first_name": "Анна"},
+            "managed_bot_created": {"bot": {"id": 42, "is_bot": True, "first_name": "Салон"}},
+        })
+        self.assertIsNone(message.text)
+        self.assertTrue(getattr(message, "managed_bot_created", None))
+        answers, state = [], FakeState()
+
+        async def answer(text, **kw):
+            answers.append(text)
+
+        with mock.patch.object(Message, "answer", lambda self, text, **kw: answer(text, **kw)):
+            run(bot_module.process_bot_token(message, state))
+        self.assertEqual(answers, [])
+
+    def test_an_ordinary_non_token_message_still_gets_the_hint(self):
+        message = FakeMessage("привет", FakeBot())
+        message.delete = None
+        run(bot_module.process_bot_token(message, FakeState({"business_name": "X"})))
+        self.assertEqual(message.answers[0][0], bot_setup.NOT_A_TOKEN_TEXT)
+
+
 class RoutingTest(unittest.TestCase):
     class Req:
         def __init__(self, data, secret):
