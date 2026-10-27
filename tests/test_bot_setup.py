@@ -277,7 +277,7 @@ class OnboardingFlowTest(unittest.TestCase):
         self.registered, self.configured = [], []
 
         class FakeCandidate:
-            def __init__(self, token):
+            def __init__(self, token, **kwargs):
                 self.token = token
                 self.session = type("S", (), {"close": staticmethod(lambda: _done())})()
 

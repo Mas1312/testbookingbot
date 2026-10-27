@@ -10,6 +10,7 @@ import re
 from aiogram import Bot
 from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
 
+from tg_session import RetrySession
 from config import SUBSCRIPTION_DAYS, SUBSCRIPTION_PRICE_RUB, TRIAL_DAYS, WEBAPP_URL
 
 TOKEN_RE = re.compile(r"^\d{6,}:[A-Za-z0-9_-]{30,}$")
@@ -112,7 +113,7 @@ async def configure_bot(bot: Bot, business: dict, platform: bool = False) -> lis
 
 async def configure_business_bot(business: dict, platform: bool = False) -> list[str]:
     """То же, но со своим Bot-инстансом по токену бизнеса (после закрывает сессию)."""
-    bot = Bot(token=business["bot_token"])
+    bot = Bot(token=business["bot_token"], session=RetrySession())
     try:
         return await configure_bot(bot, business, platform)
     finally:

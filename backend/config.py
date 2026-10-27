@@ -56,6 +56,10 @@ SUBSCRIPTION_DAYS = int(os.getenv("SUBSCRIPTION_DAYS", "30"))
 # Бизнесы без пробного периода и без оплаты (заведённые раньше) считаются бесплатным пилотом и не отключаются.
 TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "7"))
 
+# Ретранслятор Bot API за границей: с сервера api.telegram.org отвечает нестабильно. Адрес вида https://хост
+# (без /bot<токен>); пусто = ходим в Telegram напрямую. При сбое ретранслятора запрос уходит напрямую (tg_session.py).
+TELEGRAM_API_BASE = os.getenv("TELEGRAM_API_BASE", "").rstrip("/")
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "booking.db")
 
 # Расписание по умолчанию для НОВОГО бизнеса (при создании через create_business) —

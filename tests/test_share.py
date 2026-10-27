@@ -65,7 +65,7 @@ class EnsureUsernameTest(ShareBase):
         database.set_bot_username(self.bid, None)
 
         class FakeBot:
-            def __init__(self, token):
+            def __init__(self, token, **kwargs):
                 pass
 
             async def get_me(self):

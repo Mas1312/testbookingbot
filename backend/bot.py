@@ -15,6 +15,7 @@ import bot_setup
 import database
 import notifications
 import webhooks
+from tg_session import RetrySession
 from config import BOT_TOKEN, PLATFORM_BUSINESS_ID, TRIAL_DAYS, WEBAPP_URL
 
 logging.basicConfig(level=logging.INFO)
@@ -393,7 +394,7 @@ async def process_bot_token(message: Message, state: FSMContext):
         await message.answer(bot_setup.TOKEN_ALREADY_USED_TEXT)
         return
 
-    candidate_bot = Bot(token=token)
+    candidate_bot = Bot(token=token, session=RetrySession())
     try:
         me = await candidate_bot.get_me()
     except Exception:

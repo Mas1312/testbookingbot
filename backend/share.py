@@ -7,6 +7,7 @@ from aiogram import Bot
 
 import bot_setup
 import database
+from tg_session import RetrySession
 
 
 def make_qr_png(link: str) -> bytes:
@@ -23,7 +24,7 @@ async def ensure_bot_username(business: dict) -> str | None:
     спрашиваем у Telegram по токену и запоминаем. None — если Telegram не ответил."""
     if business.get("bot_username"):
         return business["bot_username"]
-    bot = Bot(token=business["bot_token"])
+    bot = Bot(token=business["bot_token"], session=RetrySession())
     try:
         me = await bot.get_me()
     except Exception as exc:
