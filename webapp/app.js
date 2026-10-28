@@ -62,6 +62,9 @@ const state = {
   comment: "",
 
   admin: {
+    clients: [],
+    clientId: null,
+    manualClientId: null,
     services: [],
     orders: [],
     statusFilter: "",
@@ -85,6 +88,8 @@ const screens = {
 
 const adminScreens = {
   orders: el("admin-screen-orders"),
+  clients: el("admin-screen-clients"),
+  client: el("admin-screen-client"),
   manual: el("admin-screen-manual"),
   services: el("admin-screen-services"),
   "service-form": el("admin-screen-service-form"),
@@ -800,7 +805,7 @@ el("admin-tab-schedule").addEventListener("click", () => {
 });
 
 function setActiveAdminTab(activeId) {
-  ["admin-tab-orders", "admin-tab-services", "admin-tab-masters", "admin-tab-theme", "admin-tab-schedule", "admin-tab-settings"].forEach((id) => {
+  ["admin-tab-orders", "admin-tab-clients", "admin-tab-services", "admin-tab-masters", "admin-tab-theme", "admin-tab-schedule", "admin-tab-settings"].forEach((id) => {
     el(id).classList.toggle("active", id === activeId);
   });
 }
@@ -883,14 +888,167 @@ async function updateOrderStatus(id, status) {
 }
 
 // ======================================================================
+// АДМИН-РЕЖИМ: клиенты
+// ======================================================================
+
+function moneyText(value) {
+  return `${Number(value || 0).toLocaleString("ru-RU")} ₽`;
+}
+
+function shortDate(isoDate) {
+  const { top } = formatDateLabel(isoDate);
+  return top;
+}
+
+function visitsWord(n) {
+  if (n % 10 === 1 && n % 100 !== 11) return "визит";
+  if (n % 10 >= 2 && n % 10 <= 4 && !(n % 100 >= 12 && n % 100 <= 14)) return "визита";
+  return "визитов";
+}
+
+let clientsRequest = 0;
+
+async function loadAdminClients() {
+  const query = el("clients-search").value.trim();
+  const mine = ++clientsRequest;
+  let clients;
+  try {
+    clients = await api(`/api/admin/clients?${qs({ ...adminAuth(), q: query })}`);
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  if (mine !== clientsRequest) return; // пришёл ответ на уже устаревший поиск
+  state.admin.clients = clients;
+  const list = el("clients-list");
+  list.innerHTML = "";
+  const empty = el("no-clients-msg");
+  empty.textContent = query ? "Никого не нашли." : "Клиентов пока нет: они появятся после первой записи.";
+  empty.classList.toggle("hidden", clients.length > 0);
+
+  clients.forEach((client) => {
+    const parts = [`${client.visits} ${visitsWord(client.visits)}`];
+    if (client.spent) parts.push(moneyText(client.spent));
+    if (client.last_visit) parts.push(`был ${shortDate(client.last_visit)}`);
+    if (client.next_booking) parts.push(`ждём ${shortDate(client.next_booking.slice(0, 10))}, ${client.next_booking.slice(11)}`);
+    const card = document.createElement("div");
+    card.className = "service-admin-card";
+    card.innerHTML = `
+      <div>
+        <div class="title">${escapeHtml(client.name)}</div>
+        <div class="badge-type">${escapeHtml(parts.join(" · "))}</div>
+      </div>
+      <span class="edit-mark">${icon("chevron-right")}</span>
+    `;
+    card.addEventListener("click", () => openClient(client.id));
+    list.appendChild(card);
+  });
+}
+
+el("admin-tab-clients").addEventListener("click", () => {
+  applyTheme(state.config.theme);
+  setActiveAdminTab("admin-tab-clients");
+  showAdminScreen("clients");
+  loadAdminClients();
+});
+
+let clientsSearchTimer = null;
+el("clients-search").addEventListener("input", () => {
+  clearTimeout(clientsSearchTimer);
+  clientsSearchTimer = setTimeout(loadAdminClients, 250);
+});
+
+async function openClient(id) {
+  let client;
+  try {
+    client = await api(`/api/admin/clients/${id}?${qs(adminAuth())}`);
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  state.admin.clientId = id;
+  state.admin.openedClient = client;
+  el("client-title").textContent = client.name;
+  el("client-name").value = client.name;
+  el("client-phone").value = client.phone || "";
+  el("client-notes").value = client.notes || "";
+
+  const stats = [
+    [client.bookings_count, "записей"],
+    [client.visits, "выполнено"],
+    [moneyText(client.spent), "на сумму"],
+    [client.last_visit ? shortDate(client.last_visit) : "—", "последний визит"],
+  ];
+  el("client-stats").innerHTML = stats
+    .map(([value, label]) => `<div class="client-stat"><b>${escapeHtml(String(value))}</b><span>${label}</span></div>`)
+    .join("");
+
+  const tg = el("client-tg");
+  tg.classList.toggle("hidden", !client.tg_id);
+  tg.innerHTML = client.tg_id ? `<a href="tg://user?id=${Number(client.tg_id)}">Открыть чат в Telegram</a>` : "";
+
+  const history = el("client-history");
+  history.innerHTML = "";
+  client.history.forEach((b) => {
+    const card = document.createElement("div");
+    card.className = "order-card";
+    const when = b.date ? `${shortDate(b.date)} в ${b.time}` : "разовый заказ";
+    card.innerHTML = `
+      <div class="order-top">
+        <div>
+          <div class="order-title">${escapeHtml(b.service_name)}</div>
+          <div class="order-meta">${escapeHtml(when)}${b.master_name ? ` · ${escapeHtml(b.master_name)}` : ""} · ${moneyText(b.price * b.quantity)}</div>
+        </div>
+        <span class="status-badge status-${escapeHtml(b.status)}">${statusLabels[b.status] || escapeHtml(b.status)}</span>
+      </div>
+      ${b.comment ? `<div class="order-comment">${icon("message")}${escapeHtml(b.comment)}</div>` : ""}
+    `;
+    history.appendChild(card);
+  });
+  showAdminScreen("client");
+}
+
+el("save-client-btn").addEventListener("click", async () => {
+  const name = el("client-name").value.trim();
+  if (!name) {
+    toast("Укажите имя клиента");
+    return;
+  }
+  const btn = el("save-client-btn");
+  btn.disabled = true;
+  try {
+    await api(`/api/admin/clients/${state.admin.clientId}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        ...adminAuth(),
+        name,
+        phone: el("client-phone").value.trim() || null,
+        notes: el("client-notes").value.trim() || null,
+      }),
+    });
+    toast("Сохранено");
+    await openClient(state.admin.clientId); // перечитываем: телефон приводится к единому виду
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+el("client-book-btn").addEventListener("click", () => {
+  const client = state.admin.openedClient;
+  if (client) openManualForm({ id: client.id, name: el("client-name").value.trim() || client.name, phone: client.phone });
+});
+
+// ======================================================================
 // АДМИН-РЕЖИМ: ручная запись владельцем
 // ======================================================================
 
 const manualMaster = () => (el("manual-master-block").classList.contains("hidden") ? null : Number(el("manual-master").value) || null);
 
-el("add-manual-btn").addEventListener("click", openManualForm);
+el("add-manual-btn").addEventListener("click", () => openManualForm());
 
-async function openManualForm() {
+async function openManualForm(client) {
   let services;
   try {
     services = (await api(`/api/admin/services?${qs(adminAuth())}`)).filter((s) => s.type === "slot");
@@ -905,6 +1063,13 @@ async function openManualForm() {
   const select = el("manual-service");
   select.innerHTML = services.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}${s.is_active ? "" : " (скрыта)"}</option>`).join("");
   ["manual-name", "manual-phone", "manual-comment"].forEach((id) => { el(id).value = ""; });
+  state.admin.manualClientId = null;
+  await loadManualClientHints();
+  if (client && client.id) {
+    state.admin.manualClientId = client.id;
+    el("manual-name").value = client.name;
+    el("manual-phone").value = client.phone || "";
+  }
 
   const dates = await api(`/api/dates?${qs({ business_id: state.businessId })}`);
   el("manual-date").innerHTML = dates.map((d) => {
@@ -954,6 +1119,36 @@ async function refreshManualSlots() {
   el("manual-no-slots").classList.toggle("hidden", slots.length > 0);
 }
 
+// Подсказки имён из базы клиентов: выбранный клиент подставляет телефон и привязывает к нему запись.
+const clientLabel = (c) => (c.phone ? `${c.name} · ${c.phone}` : c.name);
+
+async function loadManualClientHints() {
+  let clients = [];
+  try {
+    clients = await api(`/api/admin/clients?${qs(adminAuth())}`);
+  } catch (e) { /* подсказки не обязательны */ }
+  state.admin.clients = clients;
+  const list = el("manual-clients");
+  list.innerHTML = "";
+  clients.forEach((c) => {
+    const option = document.createElement("option");
+    option.value = clientLabel(c);
+    list.appendChild(option);
+  });
+}
+
+el("manual-name").addEventListener("input", (e) => {
+  const picked = state.admin.clients.find((c) => clientLabel(c) === e.target.value);
+  if (picked) {
+    state.admin.manualClientId = picked.id;
+    e.target.value = picked.name;
+    el("manual-phone").value = picked.phone || "";
+    return;
+  }
+  const chosen = state.admin.clients.find((c) => c.id === state.admin.manualClientId);
+  if (chosen && chosen.name !== e.target.value) state.admin.manualClientId = null; // имя поменяли: это уже другой человек
+});
+
 el("manual-service").addEventListener("change", refreshManualMasters);
 el("manual-master").addEventListener("change", refreshManualSlots);
 el("manual-date").addEventListener("change", refreshManualSlots);
@@ -981,6 +1176,7 @@ el("save-manual-btn").addEventListener("click", async () => {
         date: el("manual-date").value,
         time,
         client_name: name,
+        client_id: state.admin.manualClientId,
         client_phone: el("manual-phone").value.trim() || null,
         comment: el("manual-comment").value.trim() || null,
       }),

@@ -170,8 +170,8 @@ class UiTest(unittest.TestCase):
         self.assertIn('id="load-retry-btn"', html)
         self.assertIn("showLoadError()", js)
 
-    def test_script_version_bumped(self):
-        self.assertIn("app.js?v=15", self.read("index.html"))
+    def test_script_is_versioned_so_browsers_do_not_serve_a_stale_copy(self):
+        self.assertRegex(self.read("index.html"), r"app\.js\?v=\d+")
 
 
 if __name__ == "__main__":

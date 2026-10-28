@@ -257,7 +257,28 @@ def init_db():
         # Длительность позиции на момент брони: занятое время не должно «освобождаться», если позицию удалили
         # или изменили. NULL у старых записей — для них длительность берём из самой позиции, как раньше.
         "duration_min": "INTEGER",
+        # Клиент из базы клиентов бизнеса (clients). NULL только у записей до появления базы: их привязывает
+        # _backfill_clients при старте.
+        "client_id": "INTEGER",
     })
+
+    # База клиентов бизнеса: кто записывался, контакты и заметки владельца. Клиент определяется по Telegram-id, а если его
+    # нет (запись внесена вручную) — по телефону; запись без контактов создаёт отдельного клиента (см. _resolve_client).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS clients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            tg_id INTEGER,
+            phone TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_tg ON clients (business_id, tg_id) WHERE tg_id IS NOT NULL")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients (business_id, phone)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_bookings_client ON bookings (client_id)")
+    _backfill_clients(conn)
 
     conn.commit()
     conn.close()
@@ -995,21 +1016,159 @@ def get_available_slots(business_id: int, service_id: int, date: str, master_id:
     return slots
 
 
+# ---------- Клиенты ----------
+
+_GENERIC_NAMES = ("", "-", "клиент")
+
+
+def _is_generic_name(name: str | None) -> bool:
+    return (name or "").strip().casefold() in _GENERIC_NAMES
+
+
+def _touch_client(conn, client, name: str, phone: str | None, tg_id: int | None = None):
+    """Дополняет существующего клиента тем, чего у него не было: настоящее имя вместо «Клиент», телефон, Telegram-id."""
+    updates = {}
+    if _is_generic_name(client["name"]) and not _is_generic_name(name):
+        updates["name"] = name
+    if phone and not client["phone"]:
+        updates["phone"] = phone
+    if tg_id and not client["tg_id"]:
+        updates["tg_id"] = tg_id
+    if updates:
+        sets = ", ".join(f"{k} = ?" for k in updates)
+        conn.execute(f"UPDATE clients SET {sets} WHERE id = ?", (*updates.values(), client["id"]))
+
+
+def _resolve_client(conn, business_id: int, name: str | None, tg_id: int | None, phone: str | None) -> int:
+    """Клиент бизнеса для записи: по Telegram-id; если его нет — по телефону (запись внесена вручную); иначе новый.
+    Запись без контактов всегда создаёт отдельного клиента: два разных «Анна» нельзя склеивать молча."""
+    name = (name or "").strip() or "Клиент"
+    row = None
+    if tg_id:
+        row = conn.execute("SELECT * FROM clients WHERE business_id = ? AND tg_id = ?", (business_id, tg_id)).fetchone()
+        if row is None and phone:
+            # Клиент, которого владелец когда-то записал вручную по телефону, теперь записался сам: это он же.
+            row = conn.execute("SELECT * FROM clients WHERE business_id = ? AND phone = ? AND tg_id IS NULL ORDER BY id",
+                               (business_id, phone)).fetchone()
+    elif phone:
+        row = conn.execute("SELECT * FROM clients WHERE business_id = ? AND phone = ? ORDER BY id",
+                           (business_id, phone)).fetchone()
+    if row is not None:
+        _touch_client(conn, row, name, phone, tg_id)
+        return row["id"]
+    cur = conn.execute("INSERT INTO clients (business_id, name, tg_id, phone) VALUES (?, ?, ?, ?)",
+                       (business_id, name, tg_id, phone))
+    return cur.lastrowid
+
+
+def _attach_client(conn, business_id: int, client_id: int | None, name, tg_id, phone) -> int:
+    """client_id из запроса принимаем, только если он принадлежит этому бизнесу; иначе (или если не передан) — по контактам."""
+    if client_id is not None:
+        row = conn.execute("SELECT * FROM clients WHERE id = ? AND business_id = ?", (client_id, business_id)).fetchone()
+        if row is not None:
+            _touch_client(conn, row, (name or "").strip(), phone, tg_id)
+            return row["id"]
+    return _resolve_client(conn, business_id, name, tg_id, phone)
+
+
+def _backfill_clients(conn):
+    """Привязывает к клиентам записи, сделанные до появления базы клиентов. Идемпотентно: берёт только записи без client_id."""
+    rows = conn.execute(
+        "SELECT id, business_id, client_name, client_tg_id, client_phone FROM bookings WHERE client_id IS NULL ORDER BY id"
+    ).fetchall()
+    for r in rows:
+        client_id = _resolve_client(conn, r["business_id"], r["client_name"], r["client_tg_id"], r["client_phone"])
+        conn.execute("UPDATE bookings SET client_id = ? WHERE id = ?", (client_id, r["id"]))
+    if rows:
+        logging.info("База клиентов: привязано записей — %s", len(rows))
+
+
+_CLIENT_SELECT = """
+    SELECT c.id, c.name, c.tg_id, c.phone, c.notes, c.created_at,
+           COUNT(CASE WHEN b.status != 'cancelled' THEN 1 END) AS bookings_count,
+           COUNT(CASE WHEN b.status = 'done' THEN 1 END) AS visits,
+           COALESCE(SUM(CASE WHEN b.status = 'done' THEN COALESCE(b.price, 0) * b.quantity END), 0) AS spent,
+           MAX(CASE WHEN b.status = 'done' THEN b.date END) AS last_visit,
+           MIN(CASE WHEN b.status IN ('new', 'confirmed') AND b.date >= ? THEN b.date || ' ' || b.time END) AS next_booking
+    FROM clients c
+    LEFT JOIN bookings b ON b.client_id = c.id AND b.business_id = c.business_id
+    WHERE c.business_id = ?
+"""
+
+
+def _today_in_business(business_id: int) -> str:
+    return _now_in_business_tz(get_schedule(business_id)["timezone"]).date().isoformat()
+
+
+def _digits(value: str | None) -> str:
+    return "".join(ch for ch in (value or "") if ch.isdigit())
+
+
+def get_clients(business_id: int, search: str | None = None, limit: int = 500) -> list[dict]:
+    """Клиенты бизнеса: сначала те, у кого недавно была активность. visits/spent — только выполненные записи,
+    bookings_count — все неотменённые. Поиск по имени и телефону без учёта регистра (в самом SQLite lower()
+    кириллицу не понимает, поэтому фильтруем в Python)."""
+    conn = get_connection()
+    rows = conn.execute(
+        _CLIENT_SELECT + " GROUP BY c.id ORDER BY COALESCE(MAX(b.created_at), c.created_at) DESC, c.id DESC",
+        (_today_in_business(business_id), business_id),
+    ).fetchall()
+    conn.close()
+    clients = [dict(r) for r in rows]
+    query = (search or "").strip()
+    if query:
+        needle, digits = query.casefold(), _digits(query)
+        clients = [c for c in clients
+                   if needle in c["name"].casefold() or (digits and digits in _digits(c["phone"]))]
+    return clients[:limit]
+
+
+def get_client(business_id: int, client_id: int) -> dict | None:
+    conn = get_connection()
+    row = conn.execute(_CLIENT_SELECT + " AND c.id = ? GROUP BY c.id",
+                       (_today_in_business(business_id), business_id, client_id)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_client_history(business_id: int, client_id: int) -> list[dict]:
+    """Все записи клиента, новые сверху (по дате визита, заказы без даты — по времени создания)."""
+    conn = get_connection()
+    rows = conn.execute(
+        _BOOKING_SELECT + " AND b.client_id = ? ORDER BY COALESCE(b.date, substr(b.created_at, 1, 10)) DESC,"
+                          " COALESCE(b.time, '') DESC, b.id DESC",
+        (business_id, client_id),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_client(business_id: int, client_id: int, name: str, phone: str | None, notes: str | None) -> bool:
+    conn = get_connection()
+    cur = conn.execute("UPDATE clients SET name = ?, phone = ?, notes = ? WHERE id = ? AND business_id = ?",
+                       (name, phone, notes, client_id, business_id))
+    conn.commit()
+    conn.close()
+    return cur.rowcount > 0
+
+
 # ---------- Заявки (bookings) ----------
 
 def create_booking(business_id, service_id, service_name, price, date, time, client_name, client_tg_id, quantity=1, comment=None,
-                   master_id=None, master_name=None, client_phone=None, consent_at=None):
+                   master_id=None, master_name=None, client_phone=None, consent_at=None, client_id=None):
     """service_name/price — снимок с позиции НА МОМЕНТ брони: последующее изменение
-    цены или удаление позиции больше не переписывает историю заявок задним числом."""
+    цены или удаление позиции больше не переписывает историю заявок задним числом.
+    client_id — уже выбранный клиент базы (ручная запись); иначе клиента находим или создаём по контактам."""
     conn = get_connection()
+    client_id = _attach_client(conn, business_id, client_id, client_name, client_tg_id, client_phone)
     cur = conn.execute(
         """
         INSERT INTO bookings (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment,
-                              master_id, master_name, client_phone, consent_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              master_id, master_name, client_phone, consent_at, client_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment,
-         master_id, master_name, client_phone, consent_at),
+         master_id, master_name, client_phone, consent_at, client_id),
     )
     conn.commit()
     booking_id = cur.lastrowid
@@ -1019,7 +1178,7 @@ def create_booking(business_id, service_id, service_name, price, date, time, cli
 
 def create_booking_checked(business_id, service_id, service_name, price, date, time, client_name, client_tg_id,
                            quantity=1, comment=None, master_id=None, master_name=None,
-                           client_phone=None, consent_at=None):
+                           client_phone=None, consent_at=None, client_id=None):
     """Запись на слот: проверка «время свободно» и вставка — в ОДНОЙ транзакции с блокировкой
     на запись (BEGIN IMMEDIATE). Без этого два клиента, нажавших «Записаться» на одно время
     одновременно, оба проходили проверку и получали одну и ту же запись.
@@ -1033,14 +1192,16 @@ def create_booking_checked(business_id, service_id, service_name, price, date, t
         if time not in get_available_slots(business_id, service_id, date, master_id, conn=conn):
             conn.execute("ROLLBACK")
             return None
+        client_id = _attach_client(conn, business_id, client_id, client_name, client_tg_id, client_phone)
         cur = conn.execute(
             """
             INSERT INTO bookings (business_id, service_id, service_name, price, client_name, client_tg_id, date, time,
-                                  quantity, comment, master_id, master_name, client_phone, consent_at, duration_min)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  quantity, comment, master_id, master_name, client_phone, consent_at, duration_min,
+                                  client_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (business_id, service_id, service_name, price, client_name, client_tg_id, date, time, quantity, comment,
-             master_id, master_name, client_phone, consent_at, duration_min),
+             master_id, master_name, client_phone, consent_at, duration_min, client_id),
         )
         booking_id = cur.lastrowid
         conn.execute("COMMIT")

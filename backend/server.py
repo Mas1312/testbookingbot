@@ -96,7 +96,17 @@ class ManualBookingRequest(BaseModel):
     time: str
     client_name: str = Field(min_length=1, max_length=80)
     client_phone: str | None = Field(default=None, max_length=40)
+    client_id: int | None = None     # клиент из базы клиентов (выбран в подсказке); иначе создаётся новый
     comment: str | None = Field(default=None, max_length=300)
+    init_data: str = ""              # подпись Telegram WebApp — см. check_owner
+    owner_tg_id: int | None = None   # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
+
+
+class ClientUpdateRequest(BaseModel):
+    business_id: int
+    name: str = Field(min_length=1, max_length=80)
+    phone: str | None = Field(default=None, max_length=40)
+    notes: str | None = Field(default=None, max_length=1000)
     init_data: str = ""              # подпись Telegram WebApp — см. check_owner
     owner_tg_id: int | None = None   # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
 
@@ -784,17 +794,59 @@ def admin_create_booking(payload: ManualBookingRequest):
         phone = normalize_phone(payload.client_phone)
         if not phone:
             raise HTTPException(status_code=400, detail="Проверьте номер телефона")
+    client = None
+    if payload.client_id is not None:
+        client = database.get_client(business["id"], payload.client_id)
+        if not client:
+            raise HTTPException(status_code=404, detail="Клиент не найден")
+        name = client["name"]
+        phone = phone or client["phone"]  # у выбранного клиента телефон уже есть: покажем его и в карточке заявки
     booking_id = database.create_booking_checked(
         business["id"], service["id"], service["name"], service["price"], payload.date, payload.time,
-        name, None,
+        name, client["tg_id"] if client else None,
         comment=clean_text(payload.comment),
         master_id=master["id"] if master else None, master_name=master["name"] if master else None,
-        client_phone=phone,
+        client_phone=phone, client_id=client["id"] if client else None,
     )
     if booking_id is None:
         raise HTTPException(status_code=409, detail="Это время уже занято, выберите другое")
     database.update_booking_status(business["id"], booking_id, "confirmed")
     return {"ok": True, "booking_id": booking_id}
+
+
+@app.get("/api/admin/clients")
+def admin_list_clients(business_id: int, init_data: str = "", owner_tg_id: int | None = None, q: str | None = None):
+    business = resolve_business(business_id)
+    check_owner(business, init_data, owner_tg_id)
+    return database.get_clients(business["id"], search=q)
+
+
+@app.get("/api/admin/clients/{client_id}")
+def admin_get_client(client_id: int, business_id: int, init_data: str = "", owner_tg_id: int | None = None):
+    business = resolve_business(business_id)
+    check_owner(business, init_data, owner_tg_id)
+    client = database.get_client(business["id"], client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    return {**client, "history": database.get_client_history(business["id"], client_id)}
+
+
+@app.put("/api/admin/clients/{client_id}")
+def admin_update_client(client_id: int, payload: ClientUpdateRequest):
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    if not database.get_client(business["id"], client_id):
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    name = clean_text(payload.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="Укажите имя клиента")
+    phone = None
+    if (payload.phone or "").strip():
+        phone = normalize_phone(payload.phone)
+        if not phone:
+            raise HTTPException(status_code=400, detail="Проверьте номер телефона")
+    database.update_client(business["id"], client_id, name, phone, clean_text(payload.notes))
+    return {"ok": True}
 
 
 @app.patch("/api/admin/bookings/{booking_id}")

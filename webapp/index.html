@@ -8,7 +8,7 @@
        а скрипт блокирующий — приложение висело бы на белом экране. Обновление: скачать заново с
        https://telegram.org/js/telegram-web-app.js и закоммитить. -->
   <script src="telegram-web-app.js?v=1"></script>
-  <link rel="stylesheet" href="style.css?v=13" />
+  <link rel="stylesheet" href="style.css?v=15" />
 </head>
 <body>
   <!-- Набор иконок (контурные, 24×24): подставляются через <svg class="icon"><use href="#i-имя"/></svg> -->
@@ -147,6 +147,7 @@
 
       <div class="admin-tabs">
         <button id="admin-tab-orders" class="admin-tab active">Заявки</button>
+        <button id="admin-tab-clients" class="admin-tab">Клиенты</button>
         <button id="admin-tab-services" class="admin-tab">Позиции</button>
         <button id="admin-tab-masters" class="admin-tab">Мастера</button>
         <button id="admin-tab-theme" class="admin-tab">Оформление</button>
@@ -246,6 +247,45 @@
         <p id="no-orders-msg" class="hint hidden">Заявок пока нет.</p>
       </section>
 
+      <!-- База клиентов: список -->
+      <section id="admin-screen-clients" class="screen hidden">
+        <div class="field-block">
+          <input id="clients-search" type="text" maxlength="60" placeholder="Поиск по имени или телефону" />
+        </div>
+        <div id="clients-list" class="list"></div>
+        <p id="no-clients-msg" class="hint hidden"></p>
+      </section>
+
+      <!-- Карточка клиента -->
+      <section id="admin-screen-client" class="screen hidden">
+        <button class="back-btn" data-back="admin-clients"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Назад</button>
+        <h1 id="client-title"></h1>
+        <div id="client-stats" class="client-stats"></div>
+        <p id="client-tg" class="hint hidden"></p>
+
+        <div class="field-block">
+          <label>Имя</label>
+          <input id="client-name" type="text" maxlength="80" />
+        </div>
+
+        <div class="field-block">
+          <label>Телефон</label>
+          <input id="client-phone" type="tel" maxlength="40" placeholder="+7 900 123-45-67" />
+        </div>
+
+        <div class="field-block">
+          <label>Заметки</label>
+          <textarea id="client-notes" maxlength="1000" placeholder="Например: аллергия на латекс, любит приходить по вечерам"></textarea>
+          <p class="hint">Заметки видите только вы.</p>
+        </div>
+
+        <button id="save-client-btn" class="primary-btn">Сохранить</button>
+        <button id="client-book-btn" class="add-btn">Записать</button>
+
+        <h2 class="client-history-title">История записей</h2>
+        <div id="client-history" class="list"></div>
+      </section>
+
       <!-- Ручная запись владельцем -->
       <section id="admin-screen-manual" class="screen hidden">
         <button class="back-btn" data-back="admin-orders"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Назад</button>
@@ -275,7 +315,8 @@
 
         <div class="field-block">
           <label>Имя клиента</label>
-          <input id="manual-name" type="text" maxlength="80" placeholder="Например: Анна" />
+          <input id="manual-name" type="text" maxlength="80" list="manual-clients" autocomplete="off" placeholder="Начните вводить имя: подскажем из ваших клиентов" />
+          <datalist id="manual-clients"></datalist>
         </div>
 
         <div class="field-block">
@@ -643,6 +684,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=15"></script>
+  <script src="app.js?v=17"></script>
 </body>
 </html>

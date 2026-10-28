@@ -746,6 +746,42 @@ h1 {
   color: var(--primary-text);
 }
 
+/* ===== Клиенты ===== */
+.client-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin: 12px 0 14px;
+}
+
+.client-stat {
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  border: var(--card-border);
+  padding: 10px 12px;
+}
+
+.client-stat b {
+  display: block;
+  font-size: 17px;
+}
+
+.client-stat span {
+  color: var(--hint);
+  font-size: 12px;
+}
+
+#client-tg a {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.client-history-title {
+  margin: 22px 0 10px;
+  font-size: 17px;
+}
+
 /* ===== Фильтр статусов заявок ===== */
 .filter-row {
   display: flex;
