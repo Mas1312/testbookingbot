@@ -943,7 +943,8 @@ def _slot_overlaps_busy(slot_start_minutes, slot_duration, busy_ranges):
     return False
 
 
-def get_available_slots(business_id: int, service_id: int, date: str, master_id: int | None = None, conn=None):
+def get_available_slots(business_id: int, service_id: int, date: str, master_id: int | None = None, conn=None,
+                        exclude_booking_id: int | None = None):
     """Возвращает список свободных времён (HH:MM) для позиции на дату, с учётом её
     длительности, уже существующих записей и расписания бизнеса (рабочие часы, шаг
     сетки — свои у каждого бизнеса) — время «сейчас» берётся в часовом поясе бизнеса.
@@ -954,7 +955,10 @@ def get_available_slots(business_id: int, service_id: int, date: str, master_id:
 
     conn — уже открытое соединение: чтобы create_booking_checked проверял слот в той же
     транзакции, в которой потом вставит запись (иначе два одновременных запроса оба
-    увидят слот свободным)."""
+    увидят слот свободным).
+
+    exclude_booking_id — запись, которую переносят: её собственное время не считается занятым (иначе перенос часовой
+    записи с 10:00 на 10:30 пересекался бы сам с собой)."""
     service = get_service(business_id, service_id)
     if not service or service["type"] != "slot":
         return []
@@ -973,6 +977,9 @@ def get_available_slots(business_id: int, service_id: int, date: str, master_id:
           AND (s.id IS NULL OR s.type = 'slot')
     """
     busy_params = [business_id, date]
+    if exclude_booking_id is not None:
+        busy_query += " AND b.id != ?"
+        busy_params.append(exclude_booking_id)
     if master_id is not None:
         busy_query += " AND (b.master_id = ? OR b.master_id IS NULL)"
         busy_params.append(master_id)
@@ -1219,7 +1226,7 @@ def create_booking_checked(business_id, service_id, service_name, price, date, t
 # берём из самой заявки (заморожены на момент брони, см. create_booking), а на
 # join к services переключаемся только для старых записей, сделанных до этой правки.
 _BOOKING_SELECT = """
-    SELECT b.id, b.date, b.time, b.client_name, b.client_tg_id, b.quantity,
+    SELECT b.id, b.service_id, b.date, b.time, b.client_name, b.client_tg_id, b.quantity,
            b.comment, b.status, b.created_at, b.master_id, b.master_name, b.client_phone,
            COALESCE(b.service_name, s.name, 'Позиция удалена') as service_name,
            COALESCE(b.price, s.price, 0) as price,
@@ -1309,6 +1316,56 @@ def mark_reminded(booking_id: int, kinds: list[str]):
         conn.execute(f"UPDATE bookings SET {columns[kind]} = 1 WHERE id = ?", (booking_id,))
     conn.commit()
     conn.close()
+
+
+def reschedule_booking(business_id: int, booking_id: int, new_date: str, new_time: str) -> dict:
+    """Переносит запись на другую дату/время. Возвращает {"result": ..., "old_date", "old_time"}, где result:
+    "ok" | "not_found" | "not_reschedulable" (не новая/подтверждённая, без слота, время уже наступило, позиция удалена) |
+    "bad_date" (не рабочий день из доступных) | "same" (то же время) | "busy" (занято).
+    Проверка «время свободно» и обновление идут в одной транзакции (как create_booking_checked): двое не займут один слот.
+    Мастер и позиция не меняются. Флаги напоминаний выставляем по новому времени: если запись теперь ближе, чем за
+    сутки/2 часа, клиенту не нужно напоминание сразу после того, как он сам её перенёс."""
+    schedule = get_schedule(business_id)
+    available_dates = get_available_dates(business_id)
+    conn = get_connection()
+    conn.isolation_level = None  # транзакцией управляем вручную
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM bookings WHERE id = ? AND business_id = ?", (booking_id, business_id)).fetchone()
+        if row is None:
+            conn.execute("ROLLBACK")
+            return {"result": "not_found"}
+        old = {"old_date": row["date"], "old_time": row["time"]}
+        service = get_service(business_id, row["service_id"])
+        if (not can_cancel_booking(dict(row), schedule["timezone"]) or not row["date"] or not row["time"]
+                or service is None or service["type"] != "slot"):
+            conn.execute("ROLLBACK")
+            return {"result": "not_reschedulable", **old}
+        if new_date not in available_dates:
+            conn.execute("ROLLBACK")
+            return {"result": "bad_date", **old}
+        if (new_date, new_time) == (row["date"], row["time"]):
+            conn.execute("ROLLBACK")
+            return {"result": "same", **old}
+        slots = get_available_slots(business_id, row["service_id"], new_date, row["master_id"], conn=conn,
+                                    exclude_booking_id=booking_id)
+        if new_time not in slots:
+            conn.execute("ROLLBACK")
+            return {"result": "busy", **old}
+        start = booking_start(new_date, new_time, schedule["timezone"])
+        left = start - datetime.now(dt_timezone.utc) if start else timedelta(days=365)
+        conn.execute(
+            "UPDATE bookings SET date = ?, time = ?, reminded_24h = ?, reminded_2h = ? WHERE id = ? AND business_id = ?",
+            (new_date, new_time, int(left <= timedelta(hours=24)), int(left <= timedelta(hours=2)), booking_id, business_id),
+        )
+        conn.execute("COMMIT")
+        return {"result": "ok", **old}
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
 
 
 def update_booking_status(business_id: int, booking_id: int, status: str):

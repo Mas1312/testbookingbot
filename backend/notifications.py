@@ -218,6 +218,46 @@ async def cancel_by_client(business: dict, booking_id: int, client_tg_id: int):
     return booking, "ok"
 
 
+def _old_when(old_date: str | None, old_time: str | None) -> str:
+    return _when({"date": old_date, "time": old_time})
+
+
+def reschedule_client_text(booking: dict, old_date: str | None, old_time: str | None) -> str:
+    what = _title(booking)
+    if booking["master_name"]:
+        what += f" (мастер: {_e(booking['master_name'])})"
+    return (f"🔄 Запись перенесена: {what}.\n"
+            f"Было: {_old_when(old_date, old_time)}\n"
+            f"Стало: {_when(booking)}")
+
+
+async def reschedule_booking(business: dict, booking_id: int, new_date: str, new_time: str,
+                             client_tg_id: int | None = None):
+    """Перенос записи. client_tg_id задан — переносит сам клиент (чужая запись неотличима от несуществующей, владельцу
+    уходит сообщение); не задан — переносит владелец из админки (клиенту уходит сообщение). Возвращает (booking, result),
+    result — "ok" | "not_found" | "not_reschedulable" | "bad_date" | "same" | "busy"."""
+    booking = database.get_booking(business["id"], booking_id)
+    if not booking or (client_tg_id is not None and booking["client_tg_id"] != client_tg_id):
+        return None, "not_found"
+    outcome = database.reschedule_booking(business["id"], booking_id, new_date, new_time)
+    if outcome["result"] != "ok":
+        return booking, outcome["result"]
+    booking = database.get_booking(business["id"], booking_id)
+    bot = get_bot(business)
+    if client_tg_id is not None:
+        await _safe_send(
+            bot, business["owner_tg_id"],
+            f"🔄 <b>Клиент перенёс запись</b>\nБыло: {_old_when(outcome['old_date'], outcome['old_time'])}\n"
+            + owner_text(booking),
+            reply_markup=owner_keyboard(booking),
+        )
+    elif booking["client_tg_id"] and booking["client_tg_id"] != business["owner_tg_id"]:
+        await _safe_send(bot, booking["client_tg_id"],
+                         reschedule_client_text(booking, outcome["old_date"], outcome["old_time"]),
+                         reply_markup=client_keyboard(booking))
+    return booking, "ok"
+
+
 # ---------- Напоминания ----------
 
 REMINDER_INTERVAL_SECONDS = 60

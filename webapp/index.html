@@ -8,7 +8,7 @@
        а скрипт блокирующий — приложение висело бы на белом экране. Обновление: скачать заново с
        https://telegram.org/js/telegram-web-app.js и закоммитить. -->
   <script src="telegram-web-app.js?v=1"></script>
-  <link rel="stylesheet" href="style.css?v=15" />
+  <link rel="stylesheet" href="style.css?v=16" />
 </head>
 <body>
   <!-- Набор иконок (контурные, 24×24): подставляются через <svg class="icon"><use href="#i-имя"/></svg> -->
@@ -76,6 +76,19 @@
         <div id="my-history-list" class="list"></div>
         <p id="my-empty-msg" class="hint hidden">У вас пока нет записей.</p>
         <p id="my-error-msg" class="hint hidden"></p>
+      </section>
+
+      <!-- Перенос записи клиентом -->
+      <section id="screen-reschedule" class="screen hidden">
+        <button class="back-btn" data-back="my"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Назад</button>
+        <h1>Перенести запись</h1>
+        <p id="reschedule-info" class="hint"></p>
+        <div class="section-label">Новая дата</div>
+        <div id="reschedule-dates" class="list horizontal"></div>
+        <div class="section-label">Время</div>
+        <div id="reschedule-slots" class="list grid"></div>
+        <p id="reschedule-no-slots" class="hint hidden">На этот день свободных окон нет, выберите другую дату.</p>
+        <button id="reschedule-confirm" class="primary-btn" disabled>Перенести</button>
       </section>
 
       <section id="screen-masters" class="screen hidden">
@@ -284,6 +297,27 @@
 
         <h2 class="client-history-title">История записей</h2>
         <div id="client-history" class="list"></div>
+      </section>
+
+      <!-- Перенос записи владельцем -->
+      <section id="admin-screen-reschedule" class="screen hidden">
+        <button class="back-btn" data-back="admin-orders"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Назад</button>
+        <h1>Перенести запись</h1>
+        <p id="admin-reschedule-info" class="hint"></p>
+
+        <div class="field-block">
+          <label>Новая дата</label>
+          <select id="admin-reschedule-date"></select>
+        </div>
+
+        <div class="field-block">
+          <label>Время</label>
+          <select id="admin-reschedule-time"></select>
+          <p id="admin-reschedule-no-slots" class="hint hidden">На эту дату свободного времени нет — выберите другую.</p>
+        </div>
+
+        <p class="hint">Клиент получит сообщение в Telegram о новом времени.</p>
+        <button id="admin-reschedule-save" class="primary-btn">Перенести</button>
       </section>
 
       <!-- Ручная запись владельцем -->
@@ -684,6 +718,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=17"></script>
+  <script src="app.js?v=18"></script>
 </body>
 </html>

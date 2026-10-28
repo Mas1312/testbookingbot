@@ -80,6 +80,7 @@ const screens = {
   services: el("screen-services"),
   my: el("screen-my"),
   masters: el("screen-masters"),
+  reschedule: el("screen-reschedule"),
   dates: el("screen-dates"),
   slots: el("screen-slots"),
   details: el("screen-details"),
@@ -89,6 +90,7 @@ const screens = {
 const adminScreens = {
   orders: el("admin-screen-orders"),
   clients: el("admin-screen-clients"),
+  reschedule: el("admin-screen-reschedule"),
   client: el("admin-screen-client"),
   manual: el("admin-screen-manual"),
   services: el("admin-screen-services"),
@@ -433,10 +435,12 @@ function renderMyBooking(booking) {
       </div>
       <span class="status-badge status-${booking.status}">${statusLabels[booking.status] || booking.status}</span>
     </div>
-    ${booking.can_cancel ? `<div class="order-actions"><button class="btn-cancel">Отменить запись</button></div>` : ""}
+    ${booking.can_cancel ? `<div class="order-actions">${booking.can_reschedule ? `<button class="btn-move btn-reschedule">Перенести</button>` : ""}<button class="btn-cancel">Отменить запись</button></div>` : ""}
   `;
   const cancelBtn = card.querySelector(".btn-cancel");
   if (cancelBtn) cancelBtn.addEventListener("click", () => cancelMyBooking(booking));
+  const moveBtn = card.querySelector(".btn-reschedule");
+  if (moveBtn) moveBtn.addEventListener("click", () => startReschedule(booking));
   return card;
 }
 
@@ -464,6 +468,85 @@ async function loadMyBookings() {
   el("my-history-title").classList.toggle("hidden", history.length === 0);
   el("my-empty-msg").classList.toggle("hidden", bookings.length > 0);
 }
+
+// ----- перенос записи клиентом -----
+
+const reschedule = { booking: null, date: null, time: null };
+
+async function startReschedule(booking) {
+  Object.assign(reschedule, { booking, date: null, time: null });
+  const whenText = `${formatDateLabel(booking.date).top} в ${booking.time}`;
+  el("reschedule-info").textContent = `${booking.service_name}${booking.master_name ? ` · ${booking.master_name}` : ""}. Сейчас: ${whenText}.`;
+  el("reschedule-slots").innerHTML = "";
+  el("reschedule-no-slots").classList.add("hidden");
+  el("reschedule-confirm").disabled = true;
+  let dates;
+  try {
+    dates = await api(`/api/dates?${qs({ business_id: state.businessId })}`);
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  const list = el("reschedule-dates");
+  list.innerHTML = "";
+  dates.forEach((date) => {
+    const { top, weekday } = formatDateLabel(date);
+    const pill = document.createElement("div");
+    pill.className = "pill";
+    pill.innerHTML = `<span class="weekday">${weekday}</span>${top}`;
+    pill.addEventListener("click", () => pickRescheduleDate(date, pill));
+    list.appendChild(pill);
+  });
+  showScreen("reschedule");
+}
+
+async function pickRescheduleDate(date, pillEl) {
+  document.querySelectorAll("#reschedule-dates .pill").forEach((p) => p.classList.remove("selected"));
+  pillEl.classList.add("selected");
+  Object.assign(reschedule, { date, time: null });
+  el("reschedule-confirm").disabled = true;
+  let slots = [];
+  try {
+    slots = await api(`/api/my-bookings/${reschedule.booking.id}/slots?${qs({ ...clientAuth(), date })}`);
+  } catch (e) {
+    toast(e.message);
+  }
+  const list = el("reschedule-slots");
+  list.innerHTML = "";
+  el("reschedule-no-slots").classList.toggle("hidden", slots.length > 0);
+  slots.forEach((time) => {
+    const slotEl = document.createElement("div");
+    slotEl.className = "slot";
+    slotEl.textContent = time;
+    slotEl.addEventListener("click", () => {
+      document.querySelectorAll("#reschedule-slots .slot").forEach((s) => s.classList.remove("selected"));
+      slotEl.classList.add("selected");
+      reschedule.time = time;
+      el("reschedule-confirm").disabled = false;
+    });
+    list.appendChild(slotEl);
+  });
+}
+
+el("reschedule-confirm").addEventListener("click", async () => {
+  if (!reschedule.booking || !reschedule.date || !reschedule.time) return;
+  const btn = el("reschedule-confirm");
+  btn.disabled = true;
+  try {
+    await api(`/api/my-bookings/${reschedule.booking.id}/reschedule`, {
+      method: "POST",
+      body: JSON.stringify({ ...clientAuth(), date: reschedule.date, time: reschedule.time }),
+    });
+    toast("Запись перенесена");
+    openMyBookings();
+  } catch (e) {
+    toast(e.message);
+    btn.disabled = false;
+    // время могли занять, пока выбирали: обновляем список времени выбранной даты
+    const pill = [...document.querySelectorAll("#reschedule-dates .pill")].find((p) => p.classList.contains("selected"));
+    if (pill) pickRescheduleDate(reschedule.date, pill);
+  }
+});
 
 async function cancelMyBooking(booking) {
   if (!(await askConfirm("Отменить эту запись?", "Отменить запись"))) return;
@@ -861,6 +944,7 @@ async function loadAdminOrders() {
       ${order.comment ? `<div class="order-comment">${icon("message")}${escapeHtml(order.comment)}</div>` : ""}
       <div class="order-actions">
         ${order.status === "new" ? `<button class="btn-confirm" data-id="${order.id}" data-action="confirmed">Подтвердить</button>` : ""}
+        ${(order.status === "new" || order.status === "confirmed") && order.date && order.time ? `<button class="btn-move" data-id="${order.id}">Перенести</button>` : ""}
         <button class="btn-done" data-id="${order.id}" data-action="done">Выполнено</button>
         <button class="btn-cancel" data-id="${order.id}" data-action="cancelled">Отменить</button>
       </div>
@@ -870,6 +954,9 @@ async function loadAdminOrders() {
 
   list.querySelectorAll("[data-action]").forEach((btn) => {
     btn.addEventListener("click", () => updateOrderStatus(btn.dataset.id, btn.dataset.action));
+  });
+  list.querySelectorAll(".btn-move").forEach((btn) => {
+    btn.addEventListener("click", () => openAdminReschedule(orders.find((o) => String(o.id) === btn.dataset.id)));
   });
 }
 
@@ -886,6 +973,74 @@ async function updateOrderStatus(id, status) {
   });
   loadAdminOrders();
 }
+
+// ======================================================================
+// АДМИН-РЕЖИМ: перенос записи
+// ======================================================================
+
+let adminRescheduleBooking = null;
+
+async function openAdminReschedule(order) {
+  if (!order) return;
+  adminRescheduleBooking = order;
+  el("admin-reschedule-info").textContent =
+    `${order.service_name}, ${order.client_name || "без имени"}${order.master_name ? `, ${order.master_name}` : ""}. Сейчас: ${formatDateLabel(order.date).top} в ${order.time}.`;
+  let dates;
+  try {
+    dates = await api(`/api/dates?${qs({ business_id: state.businessId })}`);
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  el("admin-reschedule-date").innerHTML = dates.map((d) => {
+    const { top, weekday } = formatDateLabel(d);
+    return `<option value="${d}"${d === order.date ? " selected" : ""}>${weekday}, ${top}</option>`;
+  }).join("");
+  await refreshAdminRescheduleSlots();
+  showAdminScreen("reschedule");
+}
+
+async function refreshAdminRescheduleSlots() {
+  const select = el("admin-reschedule-time");
+  const date = el("admin-reschedule-date").value;
+  select.innerHTML = "";
+  if (!date || !adminRescheduleBooking) return;
+  let slots = [];
+  try {
+    slots = await api(`/api/admin/bookings/${adminRescheduleBooking.id}/slots?${qs({ ...adminAuth(), date })}`);
+  } catch (e) {
+    toast(e.message);
+  }
+  select.innerHTML = slots.map((t) => `<option value="${t}">${t}</option>`).join("");
+  if (slots.includes(adminRescheduleBooking.time) && date === adminRescheduleBooking.date) select.value = adminRescheduleBooking.time;
+  el("admin-reschedule-no-slots").classList.toggle("hidden", slots.length > 0);
+}
+
+el("admin-reschedule-date").addEventListener("change", refreshAdminRescheduleSlots);
+
+el("admin-reschedule-save").addEventListener("click", async () => {
+  const time = el("admin-reschedule-time").value;
+  if (!adminRescheduleBooking || !time) {
+    toast("Выберите время");
+    return;
+  }
+  const btn = el("admin-reschedule-save");
+  btn.disabled = true;
+  try {
+    await api(`/api/admin/bookings/${adminRescheduleBooking.id}/reschedule`, {
+      method: "POST",
+      body: JSON.stringify({ ...adminAuth(), date: el("admin-reschedule-date").value, time }),
+    });
+    toast("Запись перенесена");
+    showAdminScreen("orders");
+    loadAdminOrders();
+  } catch (e) {
+    toast(e.message);
+    refreshAdminRescheduleSlots();
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // ======================================================================
 // АДМИН-РЕЖИМ: клиенты

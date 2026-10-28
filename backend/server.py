@@ -102,6 +102,15 @@ class ManualBookingRequest(BaseModel):
     owner_tg_id: int | None = None   # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
 
 
+class RescheduleRequest(BaseModel):
+    business_id: int
+    date: str
+    time: str
+    init_data: str = ""              # подпись Telegram WebApp — из неё берём id клиента (клиент) или владельца (админка)
+    client_tg_id: int | None = None  # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
+    owner_tg_id: int | None = None   # дев-фолбэк для админки
+
+
 class ClientUpdateRequest(BaseModel):
     business_id: int
     name: str = Field(min_length=1, max_length=80)
@@ -594,6 +603,8 @@ def api_my_bookings(business_id: int, init_data: str = "", client_tg_id: int | N
             "price": b["price"],
             "status": b["status"],
             "can_cancel": database.can_cancel_booking(b, business["timezone"]),
+            # перенести можно только запись со слотом (разовый заказ без даты не переносится)
+            "can_reschedule": database.can_cancel_booking(b, business["timezone"]) and bool(b["date"] and b["time"]),
         })
     upcoming = sorted((r for r in result if r["can_cancel"]), key=lambda r: (r["date"] or "9999", r["time"] or ""))
     history = [r for r in result if not r["can_cancel"]]
@@ -609,6 +620,51 @@ async def api_cancel_my_booking(booking_id: int, payload: CancelRequest):
         raise HTTPException(status_code=404, detail="Запись не найдена")
     if result == "not_cancellable":
         raise HTTPException(status_code=409, detail="Эту запись уже нельзя отменить")
+    return {"ok": True}
+
+
+RESCHEDULE_ERRORS = {
+    "not_found": (404, "Запись не найдена"),
+    "not_reschedulable": (409, "Эту запись уже нельзя перенести"),
+    "bad_date": (400, "Выберите рабочий день из доступных дат"),
+    "same": (400, "Выберите другое время: запись уже на это время"),
+    "busy": (409, "Это время уже занято, выберите другое"),
+}
+
+
+def _raise_reschedule_error(result: str):
+    status, detail = RESCHEDULE_ERRORS[result]
+    raise HTTPException(status_code=status, detail=detail)
+
+
+def _reschedule_slots(business: dict, booking: dict | None, date: str) -> list[str]:
+    """Свободное время для переноса этой записи: её собственное время не считается занятым."""
+    if not booking or not booking["date"]:
+        raise HTTPException(status_code=404, detail="Запись не найдена")
+    return database.get_available_slots(business["id"], booking["service_id"], date, booking["master_id"],
+                                        exclude_booking_id=booking["id"])
+
+
+@app.get("/api/my-bookings/{booking_id}/slots")
+def api_my_booking_reschedule_slots(booking_id: int, business_id: int, date: str, init_data: str = "",
+                                    client_tg_id: int | None = None):
+    business = resolve_business(business_id)
+    tg_id = resolve_client(business, init_data, client_tg_id)
+    booking = database.get_booking(business["id"], booking_id)
+    if not booking or booking["client_tg_id"] != tg_id:
+        raise HTTPException(status_code=404, detail="Запись не найдена")
+    return _reschedule_slots(business, booking, date)
+
+
+@app.post("/api/my-bookings/{booking_id}/reschedule")
+async def api_reschedule_my_booking(booking_id: int, payload: RescheduleRequest):
+    business = resolve_business(payload.business_id)
+    if billing.is_suspended(business):
+        raise HTTPException(status_code=403, detail="Запись временно недоступна. Попробуйте позже")
+    tg_id = resolve_client(business, payload.init_data, payload.client_tg_id)
+    _, result = await notifications.reschedule_booking(business, booking_id, payload.date, payload.time, client_tg_id=tg_id)
+    if result != "ok":
+        _raise_reschedule_error(result)
     return {"ok": True}
 
 
@@ -846,6 +902,24 @@ def admin_update_client(client_id: int, payload: ClientUpdateRequest):
         if not phone:
             raise HTTPException(status_code=400, detail="Проверьте номер телефона")
     database.update_client(business["id"], client_id, name, phone, clean_text(payload.notes))
+    return {"ok": True}
+
+
+@app.get("/api/admin/bookings/{booking_id}/slots")
+def admin_reschedule_slots(booking_id: int, business_id: int, date: str, init_data: str = "",
+                           owner_tg_id: int | None = None):
+    business = resolve_business(business_id)
+    check_owner(business, init_data, owner_tg_id)
+    return _reschedule_slots(business, database.get_booking(business["id"], booking_id), date)
+
+
+@app.post("/api/admin/bookings/{booking_id}/reschedule")
+async def admin_reschedule_booking(booking_id: int, payload: RescheduleRequest):
+    business = resolve_business(payload.business_id)
+    check_owner(business, payload.init_data, payload.owner_tg_id)
+    _, result = await notifications.reschedule_booking(business, booking_id, payload.date, payload.time)
+    if result != "ok":
+        _raise_reschedule_error(result)
     return {"ok": True}
 
 

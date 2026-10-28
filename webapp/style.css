@@ -866,12 +866,13 @@ h1 {
 
 .order-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
 }
 
 .order-actions button {
-  flex: 1;
+  flex: 1 1 auto;
   padding: 9px;
   border: none;
   border-radius: var(--radius-sm);
@@ -883,6 +884,7 @@ h1 {
 .btn-confirm { background: var(--primary-fill); color: var(--primary-text); }
 .btn-done { background: var(--success); color: #fff; }
 .btn-cancel { background: var(--danger); color: #fff; }
+.btn-move { background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); }
 
 /* ===== Карточка позиции в админ-списке ===== */
 .service-admin-card {
