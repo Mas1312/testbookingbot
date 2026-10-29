@@ -280,6 +280,25 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_bookings_client ON bookings (client_id)")
     _backfill_clients(conn)
 
+    # Галерея услуги: все её фото по порядку. services.image_id остаётся «обложкой» (= первое фото галереи), поэтому
+    # старый код и старые клиенты, знающие только image_id, продолжают работать.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS service_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER NOT NULL,
+            service_id INTEGER NOT NULL,
+            media_id INTEGER NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_service_images_service ON service_images (service_id)")
+    # Единственное прежнее фото становится первым фото галереи (только для услуг, у которых галереи ещё нет).
+    cur.execute("""
+        INSERT INTO service_images (business_id, service_id, media_id, sort_order)
+        SELECT business_id, id, image_id, 0 FROM services
+        WHERE image_id IS NOT NULL AND id NOT IN (SELECT service_id FROM service_images)
+    """)
+
     conn.commit()
     conn.close()
 
@@ -665,6 +684,7 @@ def delete_orphan_media(older_than_hours: int = 24) -> int:
               SELECT logo_media_id FROM businesses WHERE logo_media_id IS NOT NULL
               UNION SELECT bg_image_id FROM businesses WHERE bg_image_id IS NOT NULL
               UNION SELECT image_id FROM services WHERE image_id IS NOT NULL
+              UNION SELECT media_id FROM service_images
               UNION SELECT bg_image_id FROM saved_themes WHERE bg_image_id IS NOT NULL
           )
         """,
@@ -684,9 +704,10 @@ def delete_media_if_unused(business_id: int, media_id: int):
         """
         SELECT 1 FROM businesses WHERE id = ? AND (logo_media_id = ? OR bg_image_id = ?)
         UNION ALL SELECT 1 FROM services WHERE business_id = ? AND image_id = ?
+        UNION ALL SELECT 1 FROM service_images WHERE business_id = ? AND media_id = ?
         UNION ALL SELECT 1 FROM saved_themes WHERE business_id = ? AND bg_image_id = ?
         """,
-        (business_id, media_id, media_id, business_id, media_id, business_id, media_id),
+        (business_id, media_id, media_id, business_id, media_id, business_id, media_id, business_id, media_id),
     ).fetchone()
     if not in_use:
         conn.execute("DELETE FROM media WHERE id = ? AND business_id = ?", (media_id, business_id))
@@ -771,8 +792,44 @@ def get_service(business_id: int, service_id: int):
     return dict(row) if row else None
 
 
+MAX_SERVICE_IMAGES = 5
+
+
+def get_service_gallery(business_id: int) -> dict[int, list[int]]:
+    """service_id -> id картинок галереи по порядку, для всех услуг бизнеса одним запросом."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT service_id, media_id FROM service_images WHERE business_id = ? ORDER BY service_id, sort_order, id",
+        (business_id,),
+    ).fetchall()
+    conn.close()
+    gallery: dict[int, list[int]] = {}
+    for r in rows:
+        gallery.setdefault(r["service_id"], []).append(r["media_id"])
+    return gallery
+
+
+def _normalize_gallery(image_ids: list[int] | None, image_id: int | None) -> list[int]:
+    """Итоговый список фото: image_ids, если передан (без повторов, не больше MAX_SERVICE_IMAGES); иначе, как раньше,
+    одно фото image_id."""
+    if image_ids is None:
+        return [image_id] if image_id else []
+    return list(dict.fromkeys(i for i in image_ids if i))[:MAX_SERVICE_IMAGES]
+
+
+def _write_gallery(conn, business_id: int, service_id: int, gallery: list[int]):
+    conn.execute("DELETE FROM service_images WHERE service_id = ? AND business_id = ?", (service_id, business_id))
+    conn.executemany(
+        "INSERT INTO service_images (business_id, service_id, media_id, sort_order) VALUES (?, ?, ?, ?)",
+        [(business_id, service_id, media_id, i) for i, media_id in enumerate(gallery)],
+    )
+    conn.execute("UPDATE services SET image_id = ? WHERE id = ? AND business_id = ?",
+                 (gallery[0] if gallery else None, service_id, business_id))
+
+
 def create_service(business_id: int, name: str, price: int, duration_min: int, type_: str,
-                   description: str | None = None, image_id: int | None = None):
+                   description: str | None = None, image_id: int | None = None, image_ids: list[int] | None = None):
+    gallery = _normalize_gallery(image_ids, image_id)
     conn = get_connection()
     cur = conn.execute(
         "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM services WHERE business_id = ?", (business_id,)
@@ -781,41 +838,53 @@ def create_service(business_id: int, name: str, price: int, duration_min: int, t
     cur = conn.execute(
         "INSERT INTO services (business_id, name, price, duration_min, type, sort_order, description, image_id)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (business_id, name, price, duration_min if type_ == "slot" else 0, type_, next_order, description, image_id),
+        (business_id, name, price, duration_min if type_ == "slot" else 0, type_, next_order, description,
+         gallery[0] if gallery else None),
     )
-    conn.commit()
     new_id = cur.lastrowid
+    _write_gallery(conn, business_id, new_id, gallery)
+    conn.commit()
     conn.close()
     return new_id
 
 
 def update_service(business_id: int, service_id: int, name: str, price: int, duration_min: int, type_: str, is_active: bool,
-                   description: str | None = None, image_id: int | None = None):
+                   description: str | None = None, image_id: int | None = None, image_ids: list[int] | None = None):
     old = get_service(business_id, service_id)
+    old_gallery = get_service_gallery(business_id).get(service_id, [])
+    if old and old["image_id"] and old["image_id"] not in old_gallery:
+        old_gallery = [old["image_id"]] + old_gallery
+    gallery = _normalize_gallery(image_ids, image_id)
     conn = get_connection()
     conn.execute(
         """
         UPDATE services
-        SET name = ?, price = ?, duration_min = ?, type = ?, is_active = ?, description = ?, image_id = ?
+        SET name = ?, price = ?, duration_min = ?, type = ?, is_active = ?, description = ?
         WHERE id = ? AND business_id = ?
         """,
         (name, price, duration_min if type_ == "slot" else 0, type_, 1 if is_active else 0,
-         description, image_id, service_id, business_id),
+         description, service_id, business_id),
     )
+    _write_gallery(conn, business_id, service_id, gallery)
     conn.commit()
     conn.close()
-    if old and old["image_id"] and old["image_id"] != image_id:
-        delete_media_if_unused(business_id, old["image_id"])
+    for media_id in old_gallery:
+        if media_id not in gallery:
+            delete_media_if_unused(business_id, media_id)
 
 
 def delete_service(business_id: int, service_id: int):
     old = get_service(business_id, service_id)
+    media_ids = list(get_service_gallery(business_id).get(service_id, []))
+    if old and old["image_id"] and old["image_id"] not in media_ids:
+        media_ids.append(old["image_id"])
     conn = get_connection()
     conn.execute("DELETE FROM services WHERE id = ? AND business_id = ?", (service_id, business_id))
+    conn.execute("DELETE FROM service_images WHERE service_id = ? AND business_id = ?", (service_id, business_id))
     conn.commit()
     conn.close()
-    if old and old["image_id"]:
-        delete_media_if_unused(business_id, old["image_id"])
+    for media_id in media_ids:
+        delete_media_if_unused(business_id, media_id)
 
 
 # ---------- Мастера ----------

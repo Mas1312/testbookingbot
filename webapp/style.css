@@ -746,6 +746,109 @@ h1 {
   color: var(--primary-text);
 }
 
+/* ===== Страница услуги ===== */
+.gallery-view {
+  position: relative;
+  margin-bottom: 14px;
+}
+
+.gallery-track {
+  display: flex;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+.gallery-track::-webkit-scrollbar {
+  display: none;
+}
+
+.gallery-track img {
+  flex: 0 0 100%;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  scroll-snap-align: center;
+}
+
+.gallery-counter {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+
+.service-meta {
+  color: var(--hint);
+  font-size: 14px;
+  margin: 4px 0 14px;
+}
+
+.service-desc {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  margin: 0 0 20px;
+}
+
+/* Галерея в форме услуги (владелец) */
+.gallery-admin {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.gallery-thumb {
+  width: 84px;
+}
+
+.gallery-thumb img {
+  display: block;
+  width: 84px;
+  height: 84px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+}
+
+.gallery-thumb .thumb-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.gallery-thumb .thumb-actions button,
+.gallery-thumb .thumb-main {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 2px;
+  border: none;
+  border-radius: calc(var(--radius-sm) - 4px);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.gallery-thumb .thumb-main {
+  display: block;
+  text-align: center;
+  background: transparent;
+  color: var(--primary);
+  cursor: default;
+  margin-top: 4px;
+}
+
+.gallery-thumb .thumb-actions .thumb-remove {
+  color: var(--danger);
+}
+
 /* ===== Клиенты ===== */
 .client-stats {
   display: grid;

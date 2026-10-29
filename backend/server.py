@@ -133,8 +133,9 @@ class ServiceRequest(BaseModel):
     duration_min: int = Field(default=0, ge=0)
     type: str = "slot"        # 'slot' или 'order'
     is_active: bool = True
-    description: str | None = Field(default=None, max_length=600)
-    image_id: int | None = None      # картинка из /api/admin/media
+    description: str | None = Field(default=None, max_length=2000)
+    image_id: int | None = None      # обложка (старое поле); если передан image_ids, берётся его первый элемент
+    image_ids: list[int] | None = Field(default=None, max_length=5)   # галерея из /api/admin/media, первое фото = обложка
     init_data: str = ""              # подпись Telegram WebApp — см. check_owner
     owner_tg_id: int | None = None   # дев-фолбэк вне Telegram, см. DEV_SKIP_INITDATA_CHECK
 
@@ -308,7 +309,27 @@ def theme_with_urls(theme: dict) -> dict:
 
 
 def with_image_urls(services: list[dict]) -> list[dict]:
-    return [{**s, "image_url": media_url(s.get("image_id"))} for s in services]
+    """К каждой услуге: обложка (image_url, как раньше) и вся галерея (images) по порядку."""
+    if not services:
+        return []
+    gallery = database.get_service_gallery(services[0]["business_id"])
+    result = []
+    for s in services:
+        ids = gallery.get(s["id"]) or ([s["image_id"]] if s.get("image_id") else [])
+        result.append({**s, "image_url": media_url(ids[0]) if ids else None,
+                       "images": [{"id": i, "url": media_url(i)} for i in ids]})
+    return result
+
+
+def resolve_gallery(business: dict, payload) -> list[int] | None:
+    """Галерея из запроса: каждое фото должно принадлежать этому бизнесу. None — клиент прислал только старое поле image_id."""
+    if payload.image_ids is None:
+        require_own_media(business["id"], payload.image_id)
+        return None
+    ids = list(dict.fromkeys(payload.image_ids))
+    for media_id in ids:
+        require_own_media(business["id"], media_id)
+    return ids
 
 
 def require_own_media(business_id: int, media_id: int | None):
@@ -681,10 +702,10 @@ def admin_list_services(business_id: int, init_data: str = "", owner_tg_id: int 
 def admin_create_service(payload: ServiceRequest):
     business = resolve_business(payload.business_id)
     check_owner(business, payload.init_data, payload.owner_tg_id)
-    require_own_media(business["id"], payload.image_id)
+    gallery = resolve_gallery(business, payload)
     new_id = database.create_service(
         business["id"], payload.name, payload.price, payload.duration_min, payload.type,
-        clean_text(payload.description), payload.image_id,
+        clean_text(payload.description), payload.image_id, image_ids=gallery,
     )
     return {"ok": True, "id": new_id}
 
@@ -695,10 +716,10 @@ def admin_update_service(service_id: int, payload: ServiceRequest):
     check_owner(business, payload.init_data, payload.owner_tg_id)
     if not database.get_service(business["id"], service_id):
         raise HTTPException(status_code=404, detail="Позиция не найдена")
-    require_own_media(business["id"], payload.image_id)
+    gallery = resolve_gallery(business, payload)
     database.update_service(
         business["id"], service_id, payload.name, payload.price, payload.duration_min, payload.type, payload.is_active,
-        clean_text(payload.description), payload.image_id,
+        clean_text(payload.description), payload.image_id, image_ids=gallery,
     )
     return {"ok": True}
 

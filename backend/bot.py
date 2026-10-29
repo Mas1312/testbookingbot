@@ -1,11 +1,12 @@
 import asyncio
 import html
 import logging
+import re
 import time
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.base import StorageKey
@@ -55,7 +56,7 @@ async def cmd_cabinet(message: Message, business_id: int):
 
 
 @dp.message(CommandStart())
-async def cmd_start(message: Message, business_id: int):
+async def cmd_start(message: Message, business_id: int, command: CommandObject | None = None):
     if business_id == PLATFORM_BUSINESS_ID:
         # TeleSlot сам по себе не бот записи — это инструмент для подключения и настройки
         # СВОИХ ботов, поэтому у него нет кнопки «Записаться» и Mini App клиента: только
@@ -76,6 +77,16 @@ async def cmd_start(message: Message, business_id: int):
     business_name = business["name"] if business else "Записи"
     webapp_url = f"{WEBAPP_URL}/?business_id={business_id}"
 
+    # Ссылка на конкретную услугу (t.me/<бот>?start=svc_<id>, её даёт владелец): открываем сразу страницу услуги.
+    service = None
+    match = re.fullmatch(r"svc_(\d{1,9})", ((command.args if command else None) or "").strip())
+    if match:
+        service = database.get_service(business_id, int(match.group(1)))
+        if service and service["is_active"]:
+            webapp_url += f"&service={service['id']}"
+        else:
+            service = None
+
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📅 Записаться", web_app=WebAppInfo(url=webapp_url))]
@@ -85,6 +96,9 @@ async def cmd_start(message: Message, business_id: int):
         f"Привет! Это бот записи «{business_name}».\n\n"
         "Нажми кнопку ниже, чтобы выбрать услугу и удобное время. Свои записи — /my."
     )
+    if service:
+        text = (f"«{business_name}»: {service['name']}.\n\n"
+                "Нажмите кнопку ниже, чтобы посмотреть подробности и записаться. Свои записи — /my.")
     if business and message.from_user.id == business["owner_tg_id"]:
         text += "\n\n🔔 Вы владелец: новые заявки будут приходить сюда с кнопками «Подтвердить / Отклонить»."
     await message.answer(text, reply_markup=keyboard)

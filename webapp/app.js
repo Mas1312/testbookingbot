@@ -81,6 +81,7 @@ const screens = {
   my: el("screen-my"),
   masters: el("screen-masters"),
   reschedule: el("screen-reschedule"),
+  service: el("screen-service"),
   dates: el("screen-dates"),
   slots: el("screen-slots"),
   details: el("screen-details"),
@@ -400,7 +401,7 @@ async function loadServices() {
       </div>
       <span class="price-tag">${service.price} ₽</span>
     `;
-    card.addEventListener("click", () => selectService(service));
+    card.addEventListener("click", () => openService(service));
     list.appendChild(card);
   });
 }
@@ -557,6 +558,46 @@ async function cancelMyBooking(booking) {
   }
   loadMyBookings();
 }
+
+// Страница услуги: показываем, только если есть что показать (описание или фото), иначе сразу запись, как раньше.
+function openService(service) {
+  const images = (service.images || []).map((i) => safeMediaUrl(i.url)).filter(Boolean);
+  if (!service.description && images.length === 0) {
+    selectService(service);
+    return;
+  }
+  state.servicePage = service;
+  el("service-page-title").textContent = service.name;
+  el("service-page-meta").textContent = [service.type === "slot" ? `${service.duration_min} мин` : null, `${service.price} ₽`]
+    .filter(Boolean).join(" · ");
+  const desc = el("service-page-desc");
+  desc.textContent = service.description || "";
+  desc.classList.toggle("hidden", !service.description);
+
+  const track = el("service-gallery-track");
+  const counter = el("service-gallery-counter");
+  track.innerHTML = "";
+  images.forEach((url) => {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "";
+    img.loading = "lazy";
+    track.appendChild(img);
+  });
+  el("service-gallery-view").classList.toggle("hidden", images.length === 0);
+  counter.classList.toggle("hidden", images.length < 2);
+  counter.textContent = `1 / ${images.length}`;
+  track.onscroll = () => {
+    const index = Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
+    counter.textContent = `${Math.min(images.length, index + 1)} / ${images.length}`;
+  };
+  showScreen("service");
+  track.scrollLeft = 0;
+}
+
+el("service-page-book").addEventListener("click", () => {
+  if (state.servicePage) selectService(state.servicePage);
+});
 
 function selectService(service) {
   state.selectedService = service;
@@ -1390,10 +1431,11 @@ function openServiceForm(service) {
   el("service-duration").value = service ? service.duration_min : "";
   el("service-desc").value = service && service.description ? service.description : "";
   el("service-active").checked = service ? !!service.is_active : true;
-  state.admin.serviceImage = service && service.image_id && safeMediaUrl(service.image_url)
-    ? { id: service.image_id, url: service.image_url }
-    : null;
-  showPicked("service-photo", state.admin.serviceImage);
+  state.admin.serviceImages = ((service && service.images) || [])
+    .filter((i) => safeMediaUrl(i.url))
+    .map((i) => ({ id: i.id, url: i.url }));
+  renderServiceGallery();
+  el("service-share-btn").classList.toggle("hidden", !service);
   setServiceType(service ? service.type : "slot");
   el("delete-service-btn").classList.toggle("hidden", !service);
   showAdminScreen("service-form");
@@ -1406,11 +1448,81 @@ function setServiceType(type) {
   el("service-form-title").dataset.type = type;
 }
 
-bindPhotoPicker(
-  "service-photo", { maxSide: 900, quality: 0.82 },
-  async (image) => { state.admin.serviceImage = image; },
-  async () => { state.admin.serviceImage = null; },
-);
+// ----- галерея фото услуги (до 5): первое фото = обложка в списке -----
+
+const MAX_SERVICE_PHOTOS = 5;
+
+function renderServiceGallery() {
+  const box = el("service-gallery");
+  box.innerHTML = "";
+  state.admin.serviceImages.forEach((image, index) => {
+    const url = safeMediaUrl(image.url);
+    if (!url) return;
+    const thumb = document.createElement("div");
+    thumb.className = "gallery-thumb";
+    thumb.innerHTML = `
+      <img src="${url}" alt="" />
+      ${index === 0 ? `<span class="thumb-main">Главное</span>` : ""}
+      <div class="thumb-actions">
+        ${index === 0 ? "" : `<button type="button" class="thumb-first">Главное</button>`}
+        <button type="button" class="thumb-remove">Убрать</button>
+      </div>
+    `;
+    const first = thumb.querySelector(".thumb-first");
+    if (first) first.addEventListener("click", () => {
+      state.admin.serviceImages.unshift(...state.admin.serviceImages.splice(index, 1));
+      renderServiceGallery();
+    });
+    thumb.querySelector(".thumb-remove").addEventListener("click", () => {
+      state.admin.serviceImages.splice(index, 1);
+      renderServiceGallery();
+    });
+    box.appendChild(thumb);
+  });
+  el("service-photo-btn").classList.toggle("hidden", state.admin.serviceImages.length >= MAX_SERVICE_PHOTOS);
+}
+
+el("service-photo-btn").addEventListener("click", () => el("service-photo-file").click());
+
+el("service-photo-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file || state.admin.serviceImages.length >= MAX_SERVICE_PHOTOS) return;
+  const btn = el("service-photo-btn");
+  const label = btn.textContent;
+  btn.textContent = "Загружаю…";
+  btn.disabled = true;
+  try {
+    const uploaded = await uploadImage(file, { maxSide: 900, quality: 0.82 });
+    state.admin.serviceImages.push({ id: uploaded.id, url: uploaded.url });
+    renderServiceGallery();
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    btn.textContent = label;
+    btn.disabled = false;
+  }
+});
+
+// Ссылка на конкретную услугу: клиент попадает в бота, и ему приходит кнопка, открывающая страницу этой услуги.
+el("service-share-btn").addEventListener("click", async () => {
+  const id = state.admin.editingServiceId;
+  if (!id) return;
+  try {
+    if (!state.admin.botUsername) {
+      const data = await api(`/api/admin/share?${qs(adminAuth())}`);
+      state.admin.botUsername = data.bot_username;
+    }
+    if (!state.admin.botUsername) {
+      toast("Не удалось определить бота, попробуйте позже");
+      return;
+    }
+    const link = `https://t.me/${state.admin.botUsername}?start=svc_${id}`;
+    toast((await copyText(link)) ? "Ссылка скопирована" : link);
+  } catch (e) {
+    toast(e.message);
+  }
+});
 
 el("type-slot").addEventListener("click", () => setServiceType("slot"));
 el("type-order").addEventListener("click", () => setServiceType("order"));
@@ -1433,7 +1545,8 @@ el("save-service-btn").addEventListener("click", async () => {
   const payload = {
     name, price, duration_min: duration, type,
     description: el("service-desc").value.trim() || null,
-    image_id: state.admin.serviceImage ? state.admin.serviceImage.id : null,
+    image_id: state.admin.serviceImages.length ? state.admin.serviceImages[0].id : null,
+    image_ids: state.admin.serviceImages.map((i) => i.id),
     is_active: el("service-active").checked, init_data: state.initData, owner_tg_id: state.myTgId, business_id: state.businessId,
   };
 
@@ -2301,6 +2414,13 @@ async function init() {
   }
   showScreen("services");
   await maybeStartWizard();
+
+  // Ссылка на конкретную услугу (?service=ID приходит из бота по ссылке t.me/<бот>?start=svc_ID): открываем её страницу.
+  const wantedService = Number(urlParams.get("service"));
+  if (wantedService && !state.config.suspended && !state.admin.wizardActive) {
+    const found = state.services.find((s) => s.id === wantedService);
+    if (found) openService(found);
+  }
 
   // Запуск из кабинета TeleSlot: ссылка вида ?business_id=N&admin=1&from=cabinet.
   if (urlParams.get("from") === "cabinet" && state.isOwner) setupCabinetBack();
