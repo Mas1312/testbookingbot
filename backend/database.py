@@ -115,6 +115,8 @@ def init_db():
         "remind0_for": "TEXT",
         # Конец бесплатного пробного периода (UTC, тот же формат). NULL — пробного периода не было (старый пилот).
         "trial_until": "TEXT",
+        # Откуда пришёл владелец (метка из ссылки t.me/<платформенный_бот>?start=<метка>); NULL — без метки.
+        "source": "TEXT",
         # Отпечаток токена бота (HMAC, см. token_crypto): по нему ищем «этот бот уже подключён», потому что
         # сам токен в bot_token может лежать зашифрованным (там при каждом шифровании разный шум).
         "bot_token_hash": "TEXT",
@@ -175,6 +177,19 @@ def init_db():
             mime TEXT NOT NULL,
             data BLOB NOT NULL,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Все, кто открывал платформенного бота (в том числе не заведшие бизнес): кто, когда и откуда (метка первого захода).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS platform_visitors (
+            tg_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            language_code TEXT,
+            source TEXT,
+            first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -513,6 +528,42 @@ def get_business_by_bot_token(bot_token: str):
     ).fetchone()
     conn.close()
     return _business_dict(row) if row else None
+
+
+def touch_platform_visitor(tg_id: int, username: str | None, first_name: str | None, language_code: str | None,
+                           source: str | None = None):
+    """Запоминает человека, открывшего платформенного бота. Метку источника берём только из первого захода с меткой:
+    позднее её не перезаписываем, иначе «пришёл из Instagram» сменилось бы на «пришёл из рассылки» при повторном /start."""
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO platform_visitors (tg_id, username, first_name, language_code, source)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(tg_id) DO UPDATE SET
+            username = excluded.username,
+            first_name = excluded.first_name,
+            language_code = excluded.language_code,
+            source = COALESCE(platform_visitors.source, excluded.source),
+            last_seen = CURRENT_TIMESTAMP
+        """,
+        (tg_id, username, first_name, language_code, source),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_platform_visitor(tg_id: int) -> dict | None:
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM platform_visitors WHERE tg_id = ?", (tg_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def set_business_source(business_id: int, source: str | None):
+    conn = get_connection()
+    conn.execute("UPDATE businesses SET source = ? WHERE id = ?", (source, business_id))
+    conn.commit()
+    conn.close()
 
 
 def get_business_by_bot_username(username: str):

@@ -3,6 +3,7 @@ import html
 import logging
 import re
 import time
+from types import SimpleNamespace
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest
@@ -55,9 +56,23 @@ async def cmd_cabinet(message: Message, business_id: int):
     )
 
 
+# Метка источника в ссылке t.me/<бот>?start=<метка>: только латиница, цифры, «_» и «-» (как разрешает Telegram).
+SOURCE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def track_platform_visitor(user, source: str | None = None):
+    """Запоминает человека, открывшего платформенного бота, и (если есть) метку источника. Сбой не должен мешать диалогу."""
+    try:
+        database.touch_platform_visitor(user.id, user.username, user.first_name, user.language_code, source)
+    except Exception:
+        logging.exception("Не удалось записать посетителя платформенного бота")
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message, business_id: int, command: CommandObject | None = None):
     if business_id == PLATFORM_BUSINESS_ID:
+        args = ((command.args if command else None) or "").strip()
+        track_platform_visitor(message.from_user, args if SOURCE_RE.match(args) else None)
         # TeleSlot сам по себе не бот записи — это инструмент для подключения и настройки
         # СВОИХ ботов, поэтому у него нет кнопки «Записаться» и Mini App клиента: только
         # приглашение начать /newbusiness. У бизнес-ботов ниже — обычный клиентский /start.
@@ -244,6 +259,7 @@ async def cmd_newbusiness(message: Message, state: FSMContext, business_id: int)
         # Клиент чужого бота не должен случайно завести «свой бизнес» (и не должен видеть, что так можно).
         await message.answer(bot_setup.NOT_PLATFORM_TEXT)
         return
+    track_platform_visitor(message.from_user)
     await start_newbusiness_dialog(message.answer, state)
 
 
@@ -253,6 +269,7 @@ async def on_start_newbusiness_button(callback: CallbackQuery, state: FSMContext
     await callback.answer()
     if business_id != PLATFORM_BUSINESS_ID or not callback.message:
         return
+    track_platform_visitor(callback.from_user)
     await start_newbusiness_dialog(callback.message.answer, state)
 
 
@@ -455,7 +472,8 @@ async def process_bot_token(message: Message, state: FSMContext):
     owner_tg_id = message.from_user.id
 
     await state.clear()
-    await bot_setup.connect_business(owner_tg_id, business_name, token, me.username)
+    business = await bot_setup.connect_business(owner_tg_id, business_name, token, me.username)
+    await notifications.notify_operator_new_business(business)
 
     await message.answer(bot_setup.done_text(business_name, me.username, trial_days=TRIAL_DAYS),
                          disable_web_page_preview=True)
@@ -488,7 +506,12 @@ async def handle_managed_bot_update(platform_bot: Bot, data: dict):
         finally:
             await candidate.session.close()
     name = (database.pop_pending_managed_bot(creator_id) or first_name or username or "Мой бизнес")[:80]
-    await bot_setup.connect_business(creator_id, name, token, username)
+    creator = (data.get("managed_bot") or {}).get("user") or {}
+    track_platform_visitor(SimpleNamespace(id=creator_id, username=creator.get("username"),
+                                           first_name=creator.get("first_name"),
+                                           language_code=creator.get("language_code")))
+    business = await bot_setup.connect_business(creator_id, name, token, username)
+    await notifications.notify_operator_new_business(business)
     # Диалог /newbusiness закончен: иначе следующее сообщение владельца приняли бы за токен.
     key = StorageKey(bot_id=platform_bot.id, chat_id=creator_id, user_id=creator_id)
     await FSMContext(storage=dp.storage, key=key).clear()

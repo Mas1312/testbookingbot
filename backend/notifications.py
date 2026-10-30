@@ -17,6 +17,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import database
 import webhooks
+from config import PLATFORM_BUSINESS_ID
 from tg_session import RetrySession
 
 # Допустимые переходы статусов для кнопок в чате. Из админки Mini App можно выставить
@@ -256,6 +257,39 @@ async def reschedule_booking(business: dict, booking_id: int, new_date: str, new
                          reschedule_client_text(booking, outcome["old_date"], outcome["old_time"]),
                          reply_markup=client_keyboard(booking))
     return booking, "ok"
+
+
+# ---------- Сообщение оператору платформы о новом бизнесе ----------
+
+def operator_new_business_text(business: dict, visitor: dict | None) -> str:
+    owner = (visitor or {}).get("first_name") or "Без имени"
+    owner_link = f'<a href="tg://user?id={int(business["owner_tg_id"])}">{_e(owner)}</a>'
+    username = (visitor or {}).get("username")
+    if username:
+        owner_link += f" (@{_e(username)})"
+    source = business.get("source")
+    lines = [
+        f"🆕 <b>Новый бизнес №{business['id']}</b> «{_e(business['name'])}»",
+        f"Бот: @{_e(business['bot_username'])}" if business.get("bot_username") else "Бот: не определён",
+        f"Владелец: {owner_link}",
+        f"Источник: <code>{_e(source)}</code>" if source else "Источник: не определён (зашёл без метки)",
+    ]
+    if business.get("trial_until"):
+        lines.append(f"Пробный период до {_e(business['trial_until'])} UTC")
+    return "\n".join(lines)
+
+
+async def notify_operator_new_business(business: dict):
+    """Сообщает оператору платформы (владельцу платформенного бизнеса), что кто-то подключил бизнес. Свои же тестовые
+    подключения не шлём. Любая ошибка только логируется: подключение владельца от этого не зависит."""
+    try:
+        platform = database.get_business(PLATFORM_BUSINESS_ID)
+        if not platform or platform["owner_tg_id"] == business["owner_tg_id"]:
+            return
+        visitor = database.get_platform_visitor(business["owner_tg_id"])
+        await _safe_send(get_bot(platform), platform["owner_tg_id"], operator_new_business_text(business, visitor))
+    except Exception:
+        logging.exception("Не удалось сообщить оператору о новом бизнесе №%s", business.get("id"))
 
 
 # ---------- Напоминания ----------

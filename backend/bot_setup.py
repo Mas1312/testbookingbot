@@ -128,6 +128,10 @@ async def connect_business(owner_tg_id: int, name: str, token: str, username: st
     подключения; потом запись приостановится до оплаты (billing.is_suspended)."""
     business = database.create_business(owner_tg_id, name, token, trial_days=TRIAL_DAYS)
     database.set_bot_username(business["id"], username)
+    business["bot_username"] = username
+    visitor = database.get_platform_visitor(owner_tg_id)
+    business["source"] = visitor["source"] if visitor else None
+    database.set_business_source(business["id"], business["source"])
     await webhooks.register_webhook(business)
     await configure_business_bot(business)
     return business
