@@ -17,6 +17,7 @@ from aiogram.types import (CallbackQuery, Message, InlineKeyboardMarkup, InlineK
 import billing
 import bot_setup
 import database
+import log_redact
 import managed_bots
 import notifications
 import webhooks
@@ -24,6 +25,7 @@ from tg_session import RetrySession
 from config import BOT_TOKEN, PLATFORM_BUSINESS_ID, TRIAL_DAYS, WEBAPP_URL
 
 logging.basicConfig(level=logging.INFO)
+log_redact.install()
 
 # dp — общий на все бизнесы: один и тот же набор обработчиков работает для каждого
 # бота, а то, какому бизнесу принадлежит конкретное обновление, приходит через

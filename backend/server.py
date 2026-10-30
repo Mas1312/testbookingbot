@@ -26,6 +26,7 @@ from templates import NICHE_TEMPLATES, TEMPLATES_BY_ID
 from config import (SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, BOT_TOKEN, DEV_SKIP_INITDATA_CHECK,
                     PLATFORM_BUSINESS_ID)
 import bot as tg_bot
+import log_redact
 from bot import dp as tg_dp
 from telegram_auth import verify_init_data
 
@@ -49,6 +50,7 @@ class RedactInitDataFilter(logging.Filter):
 
 # uvicorn.access — журнал запросов (там и лежит полный путь с query-строкой).
 logging.getLogger("uvicorn.access").addFilter(RedactInitDataFilter())
+log_redact.install()
 
 app = FastAPI(title="Booking Mini App API")
 
