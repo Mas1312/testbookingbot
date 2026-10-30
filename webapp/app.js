@@ -968,7 +968,7 @@ async function loadAdminOrders() {
     const card = document.createElement("div");
     card.className = "order-card";
     const whenText = order.date
-      ? `${order.date} в ${order.time}`
+      ? `${formatDateLabel(order.date).top} в ${order.time}`
       : "разовый заказ";
     const qtyText = order.quantity > 1 ? ` × ${order.quantity}` : "";
 
