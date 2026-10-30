@@ -8,7 +8,7 @@
        а скрипт блокирующий — приложение висело бы на белом экране. Обновление: скачать заново с
        https://telegram.org/js/telegram-web-app.js и закоммитить. -->
   <script src="telegram-web-app.js?v=1"></script>
-  <link rel="stylesheet" href="style.css?v=17" />
+  <link rel="stylesheet" href="style.css?v=18" />
 </head>
 <body>
   <!-- Набор иконок (контурные, 24×24): подставляются через <svg class="icon"><use href="#i-имя"/></svg> -->
@@ -174,6 +174,7 @@
       <div class="admin-tabs">
         <button id="admin-tab-orders" class="admin-tab active">Заявки</button>
         <button id="admin-tab-clients" class="admin-tab">Клиенты</button>
+        <button id="admin-tab-stats" class="admin-tab">Статистика</button>
         <button id="admin-tab-services" class="admin-tab">Позиции</button>
         <button id="admin-tab-masters" class="admin-tab">Мастера</button>
         <button id="admin-tab-theme" class="admin-tab">Оформление</button>
@@ -271,6 +272,91 @@
         </div>
         <div id="orders-list" class="list"></div>
         <p id="no-orders-msg" class="hint hidden">Заявок пока нет.</p>
+      </section>
+
+      <!-- Статистика -->
+      <section id="admin-screen-stats" class="screen hidden">
+        <div id="stats-period" class="filter-row">
+          <button class="period-pill" data-period="7">7 дней</button>
+          <button class="period-pill active" data-period="30">30 дней</button>
+          <button class="period-pill" data-period="90">3 месяца</button>
+          <button class="period-pill" data-period="365">Год</button>
+        </div>
+
+        <div id="stats-body">
+          <p id="stats-basis" class="hint"></p>
+          <div id="stats-tiles" class="stat-tiles"></div>
+          <p id="stats-upcoming" class="stats-upcoming hidden"></p>
+          <p id="stats-empty" class="hint hidden">За этот период записей нет. Как только они появятся, здесь будут цифры и графики.</p>
+
+          <div id="stats-cards">
+            <section id="stats-card-revenue" class="stat-card">
+              <div class="stat-card-head">
+                <h2 id="stats-revenue-title">Выручка</h2>
+                <button type="button" class="chart-toggle" data-table-toggle>Таблицей</button>
+              </div>
+              <div class="chart-view">
+                <div class="type-toggle stat-metric">
+                  <button type="button" id="stats-metric-revenue" class="type-btn active" aria-pressed="true">Выручка</button>
+                  <button type="button" id="stats-metric-bookings" class="type-btn" aria-pressed="false">Записи</button>
+                </div>
+                <div id="stats-revenue-chart" class="chart-host"></div>
+              </div>
+              <div class="table-view hidden"></div>
+            </section>
+
+            <section id="stats-card-clients" class="stat-card">
+              <div class="stat-card-head">
+                <h2>Клиенты</h2>
+                <button type="button" class="chart-toggle" data-table-toggle>Таблицей</button>
+              </div>
+              <div class="chart-view">
+                <p id="stats-clients-note" class="stat-note"></p>
+                <div id="stats-clients-chart" class="chart-host"></div>
+                <div id="stats-clients-legend" class="chart-legend"></div>
+              </div>
+              <div class="table-view hidden"></div>
+            </section>
+
+            <section id="stats-card-load" class="stat-card">
+              <div class="stat-card-head">
+                <h2>Когда загружено</h2>
+                <button type="button" class="chart-toggle" data-table-toggle>Таблицей</button>
+              </div>
+              <div class="chart-view">
+                <p class="stat-note">По дням недели (количество записей)</p>
+                <div id="stats-weekday-chart" class="chart-host"></div>
+                <p class="stat-note stat-note-gap">По часу начала (час дня, количество записей)</p>
+                <div id="stats-hours-chart" class="chart-host"></div>
+              </div>
+              <div class="table-view hidden"></div>
+            </section>
+
+            <section id="stats-card-services" class="stat-card">
+              <div class="stat-card-head">
+                <h2>Что приносит деньги</h2>
+                <button type="button" class="chart-toggle" data-table-toggle>Таблицей</button>
+              </div>
+              <div class="chart-view">
+                <p class="stat-note">Выручка по услугам за период</p>
+                <div id="stats-services-chart" class="hbars"></div>
+              </div>
+              <div class="table-view hidden"></div>
+            </section>
+
+            <section id="stats-card-masters" class="stat-card hidden">
+              <div class="stat-card-head">
+                <h2>Мастера</h2>
+                <button type="button" class="chart-toggle" data-table-toggle>Таблицей</button>
+              </div>
+              <div class="chart-view">
+                <p class="stat-note">Выручка по мастерам за период</p>
+                <div id="stats-masters-chart" class="hbars"></div>
+              </div>
+              <div class="table-view hidden"></div>
+            </section>
+          </div>
+        </div>
       </section>
 
       <!-- База клиентов: список -->
@@ -729,6 +815,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=19"></script>
+  <script src="app.js?v=23"></script>
 </body>
 </html>

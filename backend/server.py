@@ -891,6 +891,15 @@ def admin_create_booking(payload: ManualBookingRequest):
     return {"ok": True, "booking_id": booking_id}
 
 
+@app.get("/api/admin/stats")
+def admin_stats(business_id: int, init_data: str = "", owner_tg_id: int | None = None, period: int = 30):
+    business = resolve_business(business_id)
+    check_owner(business, init_data, owner_tg_id)
+    if period not in database.STATS_PERIODS:
+        raise HTTPException(status_code=400, detail="Неверный период")
+    return {**database.get_stats(business["id"], period), "use_masters": bool(business["use_masters"])}
+
+
 @app.get("/api/admin/clients")
 def admin_list_clients(business_id: int, init_data: str = "", owner_tg_id: int | None = None, q: str | None = None):
     business = resolve_business(business_id)

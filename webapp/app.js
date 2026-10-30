@@ -91,6 +91,7 @@ const screens = {
 const adminScreens = {
   orders: el("admin-screen-orders"),
   clients: el("admin-screen-clients"),
+  stats: el("admin-screen-stats"),
   reschedule: el("admin-screen-reschedule"),
   client: el("admin-screen-client"),
   manual: el("admin-screen-manual"),
@@ -929,7 +930,7 @@ el("admin-tab-schedule").addEventListener("click", () => {
 });
 
 function setActiveAdminTab(activeId) {
-  ["admin-tab-orders", "admin-tab-clients", "admin-tab-services", "admin-tab-masters", "admin-tab-theme", "admin-tab-schedule", "admin-tab-settings"].forEach((id) => {
+  ["admin-tab-orders", "admin-tab-clients", "admin-tab-stats", "admin-tab-services", "admin-tab-masters", "admin-tab-theme", "admin-tab-schedule", "admin-tab-settings"].forEach((id) => {
     el(id).classList.toggle("active", id === activeId);
   });
 }
@@ -1014,6 +1015,457 @@ async function updateOrderStatus(id, status) {
   });
   loadAdminOrders();
 }
+
+// ======================================================================
+// АДМИН-РЕЖИМ: статистика
+// ======================================================================
+
+const stats = { period: 30, metric: "revenue", data: null, request: 0 };
+const SVG_NS = "http://www.w3.org/2000/svg";
+const WEEKDAYS_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
+
+function svgEl(name, attrs, parent) {
+  const node = document.createElementNS(SVG_NS, name);
+  Object.entries(attrs || {}).forEach(([key, value]) => node.setAttribute(key, value));
+  if (parent) parent.appendChild(node);
+  return node;
+}
+
+function compactNumber(n) {
+  const fmt = (value, unit) => `${(Math.round(value * 10) / 10).toString().replace(".", ",")} ${unit}`;
+  if (n >= 1e6) return fmt(n / 1e6, "млн");
+  if (n >= 1000) return fmt(n / 1000, "тыс.");
+  return String(n);
+}
+
+// «Круглая» верхняя граница оси и шаг делений: 1, 2, 2.5, 5 × 10^k; для счётчиков шаг не меньше 1.
+function niceScale(maxValue, integer) {
+  if (maxValue <= 0) return { max: integer ? 4 : 1000, step: integer ? 1 : 250 };
+  const rough = maxValue / 4;
+  const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+  let unit = ([1, 2, 2.5, 5, 10].find((u) => u * pow >= rough) || 10) * pow;
+  if (integer) unit = Math.max(1, Math.ceil(unit));
+  return { max: Math.ceil(maxValue / unit) * unit, step: unit };
+}
+
+function bucketTitle(iso, bucket) {
+  const date = new Date(`${iso}T00:00:00`);
+  if (bucket === "month") {
+    const text = date.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+  const day = formatDateLabel(iso).top;
+  return bucket === "week" ? `Неделя с ${day}` : day;
+}
+
+function bucketTick(iso, bucket) {
+  const date = new Date(`${iso}T00:00:00`);
+  if (bucket === "month") return `${date.toLocaleDateString("ru-RU", { month: "short" }).replace(".", "")} ${String(date.getFullYear()).slice(2)}`;
+  return formatDateLabel(iso).top.replace(".", "");
+}
+
+// ----- подсказка над столбиком (один элемент на всё приложение; текст только через textContent) -----
+function chartTip() {
+  let tip = document.getElementById("chart-tip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.id = "chart-tip";
+    tip.setAttribute("role", "status");
+    tip.classList.add("hidden");
+    document.body.appendChild(tip);
+  }
+  return tip;
+}
+
+function showChartTip(anchorX, anchorY, title, rows) {
+  const tip = chartTip();
+  tip.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "tip-title";
+  head.textContent = title;
+  tip.appendChild(head);
+  rows.forEach((row) => {
+    const line = document.createElement("div");
+    line.className = "tip-row";
+    if (row.color) {
+      const key = document.createElement("span");
+      key.className = "tip-key";
+      key.style.background = row.color;
+      line.appendChild(key);
+    }
+    const value = document.createElement("b");
+    value.textContent = row.value;
+    line.appendChild(value);
+    if (row.name) {
+      const name = document.createElement("span");
+      name.className = "tip-name";
+      name.textContent = row.name;
+      line.appendChild(name);
+    }
+    tip.appendChild(line);
+  });
+  tip.classList.remove("hidden");
+  const box = tip.getBoundingClientRect();
+  const left = Math.min(window.innerWidth - box.width - 8, Math.max(8, anchorX - box.width / 2));
+  const above = anchorY - box.height - 10;
+  tip.style.left = `${left}px`;
+  tip.style.top = `${above >= 8 ? above : anchorY + 14}px`;
+}
+
+function hideChartTip() {
+  chartTip().classList.add("hidden");
+}
+
+const CHART_COLORS = { main: "var(--primary)", gray: "color-mix(in srgb, var(--text) 30%, var(--surface))" };
+
+// ----- столбчатый график: один ряд или стопка из нескольких; bars: [{tick, title, values: [..]}] -----
+function columnChart(host, o) {
+  host.innerHTML = "";
+  const W = Math.max(240, host.clientWidth || 320);
+  const padL = 36, padR = 6, padT = 18, axisH = 22, plotH = 150;
+  const plotW = W - padL - padR;
+  const totals = o.bars.map((b) => b.values.reduce((a, v) => a + v, 0));
+  const peak = Math.max(0, ...totals);
+  const { max, step } = niceScale(peak, o.integer);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${padT + plotH + axisH}`, width: "100%", class: "chart-svg", role: "img",
+    "aria-label": o.label }, host);
+  const yOf = (v) => padT + plotH - (v / max) * plotH;
+
+  for (let v = 0; v <= max + 1e-9; v += step) {
+    svgEl("line", { x1: padL, x2: W - padR, y1: yOf(v), y2: yOf(v), class: "grid-line" }, svg);
+    const label = svgEl("text", { x: padL - 6, y: yOf(v) + 3, "text-anchor": "end", class: "axis-text" }, svg);
+    label.textContent = o.yFormat(v);
+  }
+
+  const n = o.bars.length;
+  const slot = plotW / n;
+  const barW = Math.min(24, Math.max(3, slot - 2));
+  const groups = [];
+  const maxIndex = peak > 0 ? totals.indexOf(peak) : -1;
+  o.bars.forEach((bar, i) => {
+    const g = svgEl("g", { class: "bar-g" }, svg);
+    groups.push(g);
+    const x = padL + i * slot + (slot - barW) / 2;
+    let used = 0;
+    const live = bar.values.map((v, k) => ({ v, k })).filter((s) => s.v > 0);
+    live.forEach((seg, order) => {
+      const isTop = order === live.length - 1;
+      let h = Math.max(2, (seg.v / max) * plotH);
+      const y = padT + plotH - used - h;
+      used += h;
+      if (!isTop) h -= 2; // 2px просвета цвета поверхности между сегментами стопки
+      const cls = o.series[seg.k].cls || (o.emphasizeMax && i !== maxIndex ? "bar-quiet" : "bar-main");
+      if (isTop) {
+        const r = Math.min(4, barW / 2, h);
+        svgEl("path", { d: `M${x} ${y + h}V${y + r}Q${x} ${y} ${x + r} ${y}H${x + barW - r}Q${x + barW} ${y} ${x + barW} ${y + r}V${y + h}Z`,
+          class: cls }, g);
+      } else {
+        svgEl("rect", { x, y: y + 2, width: barW, height: Math.max(1, h), class: cls }, g);
+      }
+    });
+  });
+
+  if (maxIndex >= 0) { // подписываем только самый высокий столбец; остальное в подсказке и таблице
+    const cx = Math.min(W - padR - 14, Math.max(padL + 14, padL + maxIndex * slot + slot / 2));
+    const label = svgEl("text", { x: cx, y: yOf(peak) - 5, "text-anchor": "middle", class: "bar-label" }, svg);
+    label.textContent = o.yFormat(peak);
+  }
+
+  const every = Math.ceil(n / (o.maxTicks || 6));
+  o.bars.forEach((bar, i) => {
+    if (i % every !== 0) return;
+    const t = svgEl("text", { x: padL + i * slot + slot / 2, y: padT + plotH + 15, "text-anchor": "middle", class: "axis-text" }, svg);
+    t.textContent = bar.tick;
+  });
+
+  const show = (i, clientX, clientY) => {
+    groups.forEach((g, idx) => g.classList.toggle("hot", idx === i));
+    const bar = o.bars[i];
+    const rows = o.series.length > 1
+      ? bar.values.map((v, k) => ({ value: o.valueFormat(v), name: o.series[k].name, color: o.series[k].color }))
+      : [{ value: o.valueFormat(bar.values[0]), name: o.series[0].name, color: o.series[0].color }];
+    showChartTip(clientX, clientY, bar.title, rows);
+  };
+  const hide = () => { groups.forEach((g) => g.classList.remove("hot")); hideChartTip(); };
+  const indexAt = (clientX) => {
+    const box = svg.getBoundingClientRect();
+    const x = ((clientX - box.left) / box.width) * W - padL;
+    return Math.min(n - 1, Math.max(0, Math.floor(x / slot)));
+  };
+  const hit = svgEl("rect", { x: padL, y: 0, width: plotW, height: padT + plotH + axisH, fill: "transparent" }, svg);
+  const point = (e) => { const i = indexAt(e.clientX); show(i, e.clientX, e.clientY - 4); };
+  hit.addEventListener("pointermove", point);
+  hit.addEventListener("pointerdown", point);
+  hit.addEventListener("pointerleave", hide);
+  hit.addEventListener("pointercancel", hide);
+
+  // клавиатура: каждый столбец получает фокус и показывает ту же подсказку
+  o.bars.forEach((bar, i) => {
+    const k = svgEl("rect", { x: padL + i * slot, y: padT, width: slot, height: plotH, class: "kbd", tabindex: 0,
+      "aria-label": `${bar.title}: ${bar.values.map((v, j) => `${o.series[j].name} ${o.valueFormat(v)}`).join(", ")}` }, svg);
+    k.addEventListener("focus", () => {
+      const box = k.getBoundingClientRect();
+      show(i, box.left + box.width / 2, box.top);
+    });
+    k.addEventListener("blur", hide);
+  });
+}
+
+// ----- горизонтальные полосы (услуги, мастера): значение у конца полосы, одна краска -----
+function hbarChart(host, rows, empty) {
+  host.innerHTML = "";
+  if (!rows.length) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = empty;
+    host.appendChild(p);
+    return;
+  }
+  const peak = Math.max(...rows.map((r) => r.revenue), 1);
+  rows.forEach((row) => {
+    const wrap = document.createElement("div");
+    wrap.setAttribute("role", "img");
+    wrap.setAttribute("aria-label", `${row.name}: ${moneyText(row.revenue)}, записей ${row.count}`);
+    const top = document.createElement("div");
+    top.className = "hbar-row-top";
+    const name = document.createElement("span");
+    name.className = "hbar-name";
+    name.textContent = row.name;
+    const value = document.createElement("span");
+    value.className = "hbar-value";
+    value.textContent = moneyText(row.revenue);
+    const sub = document.createElement("span");
+    sub.className = "hbar-sub";
+    sub.textContent = ` · ${row.count} зап.`;
+    value.appendChild(sub);
+    top.append(name, value);
+    const track = document.createElement("div");
+    track.className = "hbar-track";
+    const fill = document.createElement("div");
+    fill.className = "hbar-fill";
+    fill.style.width = `${Math.max(1, (row.revenue / peak) * 100)}%`;
+    track.appendChild(fill);
+    wrap.append(top, track);
+    host.appendChild(wrap);
+  });
+}
+
+// ----- таблица-двойник графика -----
+function fillTable(card, headers, rows) {
+  const host = card.querySelector(".table-view");
+  host.innerHTML = "";
+  const table = document.createElement("table");
+  const head = table.createTHead().insertRow();
+  headers.forEach((h) => { const th = document.createElement("th"); th.textContent = h; head.appendChild(th); });
+  const body = table.createTBody();
+  rows.forEach((cells) => {
+    const tr = body.insertRow();
+    cells.forEach((c) => { tr.insertCell().textContent = c; });
+  });
+  host.appendChild(table);
+}
+
+document.querySelectorAll("[data-table-toggle]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const card = btn.closest(".stat-card");
+    const showTable = card.querySelector(".table-view").classList.contains("hidden");
+    card.querySelector(".table-view").classList.toggle("hidden", !showTable);
+    card.querySelector(".chart-view").classList.toggle("hidden", showTable);
+    btn.textContent = showTable ? "График" : "Таблицей";
+    btn.setAttribute("aria-pressed", String(showTable));
+    hideChartTip();
+    if (!showTable && stats.data) renderStats(stats.data); // график был скрыт: перерисовываем по реальной ширине
+  });
+});
+
+// ----- плитки с главными цифрами -----
+function deltaText(current, previous, upIsGood, unit) {
+  if (!previous) return { text: "нет данных за прошлый период", cls: "" };
+  const diff = unit === "pp" ? Math.round(current - previous) : Math.round(((current - previous) / previous) * 100);
+  if (diff === 0) return { text: "без изменений", cls: "" };
+  const sign = diff > 0 ? "+" : "−";
+  const text = `${sign}${Math.abs(diff)}${unit === "pp" ? " п.п." : "%"} к прошлому периоду`;
+  return { text, cls: (diff > 0) === upIsGood ? "good" : "bad" };
+}
+
+function renderTiles(data) {
+  const t = data.totals, p = data.previous;
+  const tiles = [
+    ["Выручка", moneyText(t.revenue), deltaText(t.revenue, p.revenue, true, "pct")],
+    ["Записей", String(t.bookings), deltaText(t.bookings, p.bookings, true, "pct")],
+    ["Средний чек", moneyText(t.avg_check), deltaText(t.avg_check, p.avg_check, true, "pct")],
+    ["Отмены", `${String(t.cancel_rate).replace(".", ",")}%`,
+      p.bookings + p.cancelled ? deltaText(t.cancel_rate, p.cancel_rate, false, "pp") : { text: "нет данных за прошлый период", cls: "" }],
+  ];
+  const host = el("stats-tiles");
+  host.innerHTML = "";
+  tiles.forEach(([label, value, delta]) => {
+    const tile = document.createElement("div");
+    tile.className = "stat-tile";
+    const l = document.createElement("div"); l.className = "stat-tile-label"; l.textContent = label;
+    const v = document.createElement("div"); v.className = "stat-tile-value"; v.textContent = value;
+    const d = document.createElement("div"); d.className = `stat-tile-delta ${delta.cls}`; d.textContent = delta.text;
+    tile.append(l, v, d);
+    host.appendChild(tile);
+  });
+}
+
+function recordsWord(n) {
+  if (n % 10 === 1 && n % 100 !== 11) return "запись";
+  if (n % 10 >= 2 && n % 10 <= 4 && !(n % 100 >= 12 && n % 100 <= 14)) return "записи";
+  return "записей";
+}
+
+const PERIOD_NAMES = { 7: "за 7 дней", 30: "за 30 дней", 90: "за 3 месяца", 365: "за год" };
+
+function renderStats(data) {
+  stats.data = data;
+  const t = data.totals;
+  const empty = t.bookings === 0 && t.cancelled === 0 && data.upcoming.count === 0;
+  el("stats-basis").textContent = "Выручка считается по ценам услуг и только по состоявшимся записям: отмеченным «Выполнено» "
+    + "и подтверждённым, время которых уже прошло. Реальные оплаты, скидки и чаевые здесь не видны.";
+  el("stats-empty").classList.toggle("hidden", !empty);
+  el("stats-cards").classList.toggle("hidden", empty && !data.upcoming.count);
+  renderTiles(data);
+
+  const up = el("stats-upcoming");
+  up.classList.toggle("hidden", data.upcoming.count === 0);
+  up.textContent = data.upcoming.count
+    ? `Ожидается: ${data.upcoming.count} ${recordsWord(data.upcoming.count)} на ${moneyText(data.upcoming.revenue)} (будущие, не отменённые).`
+    : "";
+
+  const bucket = data.bucket;
+  const periodName = PERIOD_NAMES[data.period];
+  const money = (v) => moneyText(v);
+
+  // выручка / записи
+  const isRevenue = stats.metric === "revenue";
+  el("stats-revenue-title").textContent = isRevenue ? `Выручка ${periodName}` : `Записи ${periodName}`;
+  const revBars = data.series.map((b) => ({ tick: bucketTick(b.date, bucket), title: bucketTitle(b.date, bucket),
+    values: [isRevenue ? b.revenue : b.bookings] }));
+  const revCard = el("stats-card-revenue");
+  if (!revCard.querySelector(".chart-view").classList.contains("hidden")) {
+    columnChart(el("stats-revenue-chart"), {
+      bars: revBars, series: [{ name: isRevenue ? "Выручка" : "Записей", color: CHART_COLORS.main }],
+      integer: !isRevenue, yFormat: compactNumber, valueFormat: isRevenue ? money : String,
+      label: `${isRevenue ? "Выручка" : "Записи"} ${periodName}: ${isRevenue ? money(t.revenue) : t.bookings}`,
+    });
+  }
+  fillTable(revCard, [bucket === "day" ? "День" : bucket === "week" ? "Неделя" : "Месяц", "Выручка", "Записей"],
+    data.series.map((b) => [bucketTitle(b.date, bucket), money(b.revenue), String(b.bookings)]));
+
+  // клиенты: новые и вернувшиеся (стопка из двух рядов, легенда обязательна)
+  const c = data.clients;
+  const total = c.new + c.returning;
+  el("stats-clients-note").textContent = total
+    ? `Клиентов за период: ${total}. Пришли впервые: ${c.new}, уже бывали раньше: ${c.returning} (${Math.round((c.returning / total) * 100)}%).`
+    : "За период клиентов не было.";
+  const clientSeries = [{ name: "Впервые", color: CHART_COLORS.main, cls: "bar-main" },
+    { name: "Уже бывали", color: CHART_COLORS.gray, cls: "bar-gray" }];
+  const clientCard = el("stats-card-clients");
+  if (!clientCard.querySelector(".chart-view").classList.contains("hidden")) {
+    columnChart(el("stats-clients-chart"), {
+      bars: data.series.map((b) => ({ tick: bucketTick(b.date, bucket), title: bucketTitle(b.date, bucket),
+        values: [b.new_clients, b.returning_clients] })),
+      series: clientSeries, integer: true, yFormat: compactNumber, valueFormat: String,
+      label: `Клиенты ${periodName}: впервые ${c.new}, уже бывали ${c.returning}`,
+    });
+  }
+  const legend = el("stats-clients-legend");
+  legend.innerHTML = "";
+  clientSeries.forEach((s) => {
+    const item = document.createElement("span");
+    const swatch = document.createElement("i");
+    swatch.style.background = s.color;
+    item.append(swatch, document.createTextNode(s.name));
+    legend.appendChild(item);
+  });
+  fillTable(clientCard, ["Период", "Впервые", "Уже бывали"],
+    data.series.map((b) => [bucketTitle(b.date, bucket), String(b.new_clients), String(b.returning_clients)]));
+
+  // когда загружено
+  const loadCard = el("stats-card-load");
+  const hoursUsed = data.hours.map((v, h) => (v ? h : -1)).filter((h) => h >= 0);
+  const from = hoursUsed.length ? Math.max(0, Math.min(...hoursUsed) - 0) : 9;
+  const to = hoursUsed.length ? Math.min(23, Math.max(...hoursUsed)) : 18;
+  const hourRange = Array.from({ length: to - from + 1 }, (_, i) => from + i);
+  if (!loadCard.querySelector(".chart-view").classList.contains("hidden")) {
+    columnChart(el("stats-weekday-chart"), {
+      bars: data.weekdays.map((v, i) => ({ tick: WEEKDAYS_SHORT[i], title: ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"][i], values: [v] })),
+      series: [{ name: "Записей", color: CHART_COLORS.main }], integer: true, yFormat: compactNumber, valueFormat: String,
+      emphasizeMax: true, maxTicks: 7, label: "Записи по дням недели",
+    });
+    columnChart(el("stats-hours-chart"), {
+      bars: hourRange.map((h) => ({ tick: `${h}`, title: `${String(h).padStart(2, "0")}:00`, values: [data.hours[h]] })),
+      series: [{ name: "Записей", color: CHART_COLORS.main }], integer: true, yFormat: compactNumber, valueFormat: String,
+      emphasizeMax: true, maxTicks: 8, label: "Записи по времени начала",
+    });
+  }
+  fillTable(loadCard, ["День / час", "Записей"], [
+    ...data.weekdays.map((v, i) => [["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"][i], String(v)]),
+    ...hourRange.map((h) => [`${String(h).padStart(2, "0")}:00`, String(data.hours[h])]),
+  ]);
+
+  // услуги и мастера
+  hbarChart(el("stats-services-chart"), data.services, "Состоявшихся записей за период нет.");
+  fillTable(el("stats-card-services"), ["Услуга", "Выручка", "Записей"], data.services.map((s) => [s.name, money(s.revenue), String(s.count)]));
+  const showMasters = data.use_masters && data.masters.length > 0;
+  el("stats-card-masters").classList.toggle("hidden", !showMasters);
+  if (showMasters) {
+    hbarChart(el("stats-masters-chart"), data.masters, "Нет данных.");
+    fillTable(el("stats-card-masters"), ["Мастер", "Выручка", "Записей"], data.masters.map((m) => [m.name, money(m.revenue), String(m.count)]));
+  }
+}
+
+async function loadStats() {
+  const mine = ++stats.request;
+  const body = el("stats-body");
+  body.classList.add("loading"); // старый график остаётся на месте, пока грузится новый: без скелетона и скачков
+  try {
+    const data = await api(`/api/admin/stats?${qs({ ...adminAuth(), period: stats.period })}`);
+    if (mine !== stats.request) return;
+    renderStats(data);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    if (mine === stats.request) body.classList.remove("loading");
+  }
+}
+
+el("admin-tab-stats").addEventListener("click", () => {
+  applyTheme(state.config.theme);
+  setActiveAdminTab("admin-tab-stats");
+  showAdminScreen("stats");
+  loadStats();
+});
+
+document.querySelectorAll(".period-pill").forEach((pill) => {
+  pill.addEventListener("click", () => {
+    document.querySelectorAll(".period-pill").forEach((p) => p.classList.remove("active"));
+    pill.classList.add("active");
+    stats.period = Number(pill.dataset.period);
+    loadStats();
+  });
+});
+
+[["stats-metric-revenue", "revenue"], ["stats-metric-bookings", "bookings"]].forEach(([id, metric]) => {
+  el(id).addEventListener("click", () => {
+    stats.metric = metric;
+    el("stats-metric-revenue").classList.toggle("active", metric === "revenue");
+    el("stats-metric-bookings").classList.toggle("active", metric === "bookings");
+    el("stats-metric-revenue").setAttribute("aria-pressed", String(metric === "revenue"));
+    el("stats-metric-bookings").setAttribute("aria-pressed", String(metric === "bookings"));
+    if (stats.data) renderStats(stats.data);
+  });
+});
+
+let statsResizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(statsResizeTimer);
+  statsResizeTimer = setTimeout(() => {
+    if (stats.data && !el("admin-screen-stats").classList.contains("hidden")) renderStats(stats.data);
+  }, 200);
+});
 
 // ======================================================================
 // АДМИН-РЕЖИМ: перенос записи

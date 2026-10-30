@@ -1279,6 +1279,165 @@ def update_client(business_id: int, client_id: int, name: str, phone: str | None
     return cur.rowcount > 0
 
 
+# ---------- Статистика ----------
+
+STATS_PERIODS = (7, 30, 90, 365)
+
+
+def _monday(day):
+    return day - timedelta(days=day.weekday())
+
+
+def _stats_row_date(row) -> str | None:
+    """День записи для статистики: дата визита, а у разовых заказов без даты — день создания."""
+    return row["date"] or ((row["created_at"] or "")[:10] or None)
+
+
+def get_stats(business_id: int, period_days: int) -> dict:
+    """Статистика бизнеса за последние period_days дней (включая сегодня, по часовому поясу бизнеса) и такой же
+    предыдущий период для сравнения.
+
+    «Состоявшаяся» запись (она даёт выручку): отмечена «Выполнено» ИЛИ подтверждена и её время уже наступило — иначе
+    статистика была бы пустой, пока владелец не нажимает «Выполнено». Выручка считается по ценам услуг на момент записи
+    (снимок в заявке): реальные оплаты клиентов мимо нас, скидок и чаевых мы не видим. Отменённые не считаются нигде,
+    кроме доли отмен. Всё считаем в Python: записей у малого бизнеса немного, а SQLite lower() не знает кириллицы."""
+    schedule = get_schedule(business_id)
+    tz = schedule["timezone"]
+    today = _now_in_business_tz(tz).date()
+    now_utc = datetime.now(dt_timezone.utc)
+    start = today - timedelta(days=period_days - 1)
+    prev_end = start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=period_days - 1)
+
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT b.id, b.date, b.time, b.status, b.price, b.quantity, b.master_name, b.client_id, b.created_at,
+               COALESCE(b.service_name, s.name, 'Позиция удалена') AS service_name
+        FROM bookings b LEFT JOIN services s ON s.id = b.service_id
+        WHERE b.business_id = ?
+        """,
+        (business_id,),
+    ).fetchall()
+    conn.close()
+
+    items = []
+    for r in rows:
+        day = _stats_row_date(r)
+        if not day:
+            continue
+        try:
+            day_d = datetime.strptime(day, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        active = r["status"] != "cancelled"
+        held = False
+        if r["status"] == "done":
+            held = True
+        elif r["status"] == "confirmed" and r["date"] and r["time"]:
+            started = booking_start(r["date"], r["time"], tz)
+            held = started is not None and started <= now_utc
+        items.append({
+            "day": day_d, "hour": int(r["time"][:2]) if r["date"] and r["time"] else None, "active": active, "held": held,
+            "cancelled": not active, "money": (r["price"] or 0) * (r["quantity"] or 1), "service": r["service_name"],
+            "master": r["master_name"], "client": r["client_id"],
+        })
+
+    def window(a, b):
+        return [i for i in items if a <= i["day"] <= b]
+
+    def totals(sel):
+        held = [i for i in sel if i["held"]]
+        active = [i for i in sel if i["active"]]
+        cancelled = sum(1 for i in sel if i["cancelled"])
+        revenue = sum(i["money"] for i in held)
+        return {
+            "revenue": revenue, "bookings": len(active), "completed": len(held),
+            "avg_check": round(revenue / len(held)) if held else 0,
+            "cancelled": cancelled,
+            "cancel_rate": round(cancelled / (cancelled + len(active)) * 100, 1) if (cancelled + len(active)) else 0.0,
+        }
+
+    cur, prev = window(start, today), window(prev_start, prev_end)
+
+    # столбцы графика: дни (до 30 дней), недели (90) или месяцы (год)
+    if period_days <= 30:
+        kind = "day"
+        keys = [start + timedelta(days=n) for n in range(period_days)]
+        bucket_of = lambda d: d
+    elif period_days <= 90:
+        kind = "week"
+        keys, cursor = [], _monday(start)
+        while cursor <= today:
+            keys.append(cursor)
+            cursor += timedelta(days=7)
+        bucket_of = _monday
+    else:
+        kind = "month"
+        keys, cursor = [], start.replace(day=1)
+        while cursor <= today:
+            keys.append(cursor)
+            cursor = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
+        bucket_of = lambda d: d.replace(day=1)
+    buckets = {k: {"date": k.isoformat(), "revenue": 0, "bookings": 0, "new_clients": 0, "returning_clients": 0} for k in keys}
+
+    first_day = {}
+    for i in items:
+        if i["active"] and i["client"] is not None:
+            first_day[i["client"]] = min(first_day.get(i["client"], i["day"]), i["day"])
+    seen = {}  # (bucket, client) -> уже посчитан в этом столбце
+    for i in cur:
+        key = bucket_of(i["day"])
+        bucket = buckets.get(key)
+        if bucket is None:
+            continue
+        if i["active"]:
+            bucket["bookings"] += 1
+        if i["held"]:
+            bucket["revenue"] += i["money"]
+        if i["active"] and i["client"] is not None and (key, i["client"]) not in seen:
+            seen[(key, i["client"])] = True
+            is_new = bucket_of(first_day[i["client"]]) == key
+            bucket["new_clients" if is_new else "returning_clients"] += 1
+
+    weekdays = [0] * 7
+    hours = [0] * 24
+    for i in cur:
+        if i["active"] and i["hour"] is not None:
+            weekdays[i["day"].weekday()] += 1
+            hours[i["hour"]] += 1
+
+    def grouped(field, only_named=False):
+        groups = {}
+        for i in cur:
+            if not i["held"] or (only_named and not i[field]):
+                continue
+            g = groups.setdefault(i[field], {"name": i[field], "revenue": 0, "count": 0})
+            g["revenue"] += i["money"]
+            g["count"] += 1
+        return sorted(groups.values(), key=lambda g: (-g["revenue"], -g["count"], g["name"]))
+
+    services = grouped("service")
+    if len(services) > 8:
+        rest = services[7:]
+        services = services[:7] + [{"name": "Остальные", "revenue": sum(g["revenue"] for g in rest),
+                                     "count": sum(g["count"] for g in rest), "other": True}]
+
+    clients_in_period = {i["client"] for i in cur if i["active"] and i["client"] is not None}
+    new_clients = sum(1 for c in clients_in_period if start <= first_day[c] <= today)
+    upcoming = [i for i in items if i["active"] and not i["held"] and i["day"] >= today]
+
+    return {
+        "period": period_days, "from": start.isoformat(), "to": today.isoformat(), "bucket": kind,
+        "totals": totals(cur), "previous": totals(prev),
+        "upcoming": {"count": len(upcoming), "revenue": sum(i["money"] for i in upcoming)},
+        "series": [buckets[k] for k in keys],
+        "weekdays": weekdays, "hours": hours,
+        "services": services, "masters": grouped("master", only_named=True),
+        "clients": {"new": new_clients, "returning": len(clients_in_period) - new_clients},
+    }
+
+
 # ---------- Заявки (bookings) ----------
 
 def create_booking(business_id, service_id, service_name, price, date, time, client_name, client_tg_id, quantity=1, comment=None,
