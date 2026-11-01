@@ -2214,7 +2214,7 @@ const THEME_PRESETS = [
     danger_color: "#B3261E", success_color: "#3F7D3A", radius: 8, font: "serif", card_style: "outline",
   },
   {
-    name: "Розовый", bg_mode: "gradient", bg_color: "#FFF5F8", bg_color2: "#FFFFFF", bg_angle: 160,
+    name: "Розовый", bg_mode: "gradient", bg_color: "#FFCFE0", bg_color2: "#FFFFFF", bg_angle: 170,
     surface_color: "#FFFFFF", text_color: "#3A1F2A", hint_color: "#8E6F7B",
     primary_color: "#C2255C", primary_color2: "#D6336C", primary_text_color: "#FFFFFF",
     danger_color: "#C92A2A", success_color: "#2B8A3E", radius: 20, font: "rounded",
