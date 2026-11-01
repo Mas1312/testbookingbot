@@ -15,8 +15,16 @@ class RedactTokenFilter(logging.Filter):
     потому что токен чаще всего сидит в исключении, а не в самом сообщении."""
 
     def filter(self, record):
-        record.msg = redact(record.getMessage())
-        record.args = None
+        # Подменяем текст только если токен реально найден: иначе args остаются как были —
+        # форматтер uvicorn.access сам распаковывает их в адрес/метод/путь.
+        try:
+            rendered = record.getMessage()
+        except Exception:
+            rendered = None
+        if rendered is not None:
+            cleaned = redact(rendered)
+            if cleaned != rendered:
+                record.msg, record.args = cleaned, ()
         if record.exc_info and not record.exc_text:
             record.exc_text = logging.Formatter().formatException(record.exc_info)
         if record.exc_text:

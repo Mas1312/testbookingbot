@@ -37,6 +37,20 @@ class RedactTokenTest(unittest.TestCase):
         self.assertNotIn(TOKEN, stream.getvalue())
         self.assertIn("RuntimeError", stream.getvalue())
 
+    def test_exception_argument_is_cleaned(self):
+        logger, stream = self._logger()
+        logger.error("failed: %s", RuntimeError(f"https://api.telegram.org/bot{TOKEN}/getMe"))
+        self.assertNotIn(TOKEN, stream.getvalue())
+
+    def test_uvicorn_access_format_still_works(self):
+        from uvicorn.logging import AccessFormatter
+        record = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1,
+                                   '%s - "%s %s HTTP/%s" %d',
+                                   ("1.2.3.4:5", "GET", "/api/config?business_id=1", "1.1", 200), None)
+        self.assertTrue(log_redact.RedactTokenFilter().filter(record))
+        text = AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s').format(record)
+        self.assertIn("GET /api/config?business_id=1", text)
+
     def test_plain_text_untouched(self):
         self.assertEqual(log_redact.redact("booking 12:30 ok"), "booking 12:30 ok")
 
