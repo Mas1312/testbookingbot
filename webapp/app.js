@@ -2197,6 +2197,12 @@ const THEME_PRESETS = [
     danger_color: "#D6336C", success_color: "#2B8A3E", radius: 22, font: "rounded",
   },
   {
+    name: "Розово-белая", bg_mode: "gradient", bg_color: "#FFFFFF", bg_color2: "#FFE4EE", bg_angle: 160,
+    surface_color: "#FFFFFF", text_color: "#3D1F2C", hint_color: "#9A7585",
+    primary_color: "#EC4899", primary_color2: "#F472B6", primary_text_color: "#FFFFFF",
+    danger_color: "#C62828", success_color: "#2E7D32", radius: 20, font: "rounded",
+  },
+  {
     name: "Мята", bg_mode: "gradient", bg_color: "#E6FAF1", bg_color2: "#E4F1FF", bg_angle: 150,
     surface_color: "#FFFFFF", text_color: "#10352B", hint_color: "#5F8177",
     primary_color: "#12B981", primary_color2: "#0EA5A5", primary_text_color: "#FFFFFF",
