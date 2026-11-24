@@ -22,7 +22,7 @@ import managed_bots
 import notifications
 import webhooks
 from tg_session import RetrySession
-from config import BOT_TOKEN, PLATFORM_BUSINESS_ID, TRIAL_DAYS, WEBAPP_URL
+from config import BOT_TOKEN, PLATFORM_BOT_USERNAME, PLATFORM_BUSINESS_ID, TRIAL_DAYS, WEBAPP_URL
 
 logging.basicConfig(level=logging.INFO)
 log_redact.install()
@@ -413,7 +413,8 @@ async def process_business_name(message: Message, state: FSMContext):
     await state.set_state(NewBusinessStates.waiting_token)
 
     platform = database.get_business(PLATFORM_BUSINESS_ID)
-    manager_username = platform["bot_username"] if platform else None
+    # У платформенного бизнеса, заведённого из BOT_TOKEN при пустой базе, username не определяется: берём из настроек.
+    manager_username = (platform["bot_username"] if platform else None) or PLATFORM_BOT_USERNAME
     if manager_username and await managed_bots.available(message.bot):
         username = managed_bots.suggest_username(name)
         database.save_pending_managed_bot(message.from_user.id, name, username)

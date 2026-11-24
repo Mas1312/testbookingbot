@@ -335,6 +335,17 @@ class OnboardingStepTest(DbBase):
         # название запомнено: событие о новом боте придёт без него
         self.assertEqual(database.pop_pending_managed_bot(CREATOR), "Ламинирование ресниц")
 
+    def test_offer_survives_empty_platform_username(self):
+        """Платформенный бизнес из BOT_TOKEN на пустой базе заведён без bot_username: автосоздание не должно пропадать."""
+        self._patch_platform.stop()
+        self._patch_platform = mock.patch.object(
+            bot_module.database, "get_business",
+            lambda bid: {"id": bid, "bot_username": ""} if bid == PLATFORM_BUSINESS_ID else None)
+        self._patch_platform.start()
+        message, _ = self.step(True)
+        url_button = next(b for row in message.answers[0][1]["reply_markup"].inline_keyboard for b in row if b.url)
+        self.assertTrue(url_button.url.startswith("https://t.me/newbot/teleslotapp_bot/"))
+
     def test_username_in_the_link_is_the_suggested_one(self):
         message, _ = self.step(True)
         url = next(b.url for row in message.answers[0][1]["reply_markup"].inline_keyboard for b in row if b.url)

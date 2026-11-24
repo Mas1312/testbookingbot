@@ -514,7 +514,7 @@ def api_config(business_id: int | None = None):
         # Пробный период или подписка закончились: клиентам запись не показываем, владельцу — подсказку, куда платить.
         "suspended": suspended,
         "powered_by_link": powered_by_link(business),
-        "platform_link": bot_setup.bot_link(platform["bot_username"]) if platform and platform.get("bot_username") else None,
+        "platform_link": bot_setup.bot_link((platform.get("bot_username") or PLATFORM_BOT_USERNAME)) if platform else None,
     }
 
 
