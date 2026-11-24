@@ -1865,6 +1865,17 @@ p.center {
   margin-top: 8px;
 }
 
+/* ===== Ссылка «Работает на TeleSlot» внизу страницы записи ===== */
+.powered-by {
+  display: block;
+  margin: 28px 0 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--hint);
+  text-decoration: none;
+  opacity: 0.8;
+}
+
 /* ===== Запись приостановлена: баннер владельцу ===== */
 .suspended-banner {
   background: var(--surface);

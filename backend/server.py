@@ -24,7 +24,7 @@ import weekly_schedule
 import webhooks
 from templates import NICHE_TEMPLATES, TEMPLATES_BY_ID
 from config import (SERVER_PORT, BUSINESS_NAME, OWNER_TG_ID, USE_WEBHOOK, BOT_TOKEN, DEV_SKIP_INITDATA_CHECK,
-                    PLATFORM_BUSINESS_ID)
+                    PLATFORM_BUSINESS_ID, PLATFORM_BOT_USERNAME)
 import bot as tg_bot
 import log_redact
 from bot import dp as tg_dp
@@ -486,6 +486,17 @@ async def telegram_webhook(business_id: int, request: Request):
 
 # ---------- Публичное API (для клиентов) ----------
 
+def powered_by_link(business: dict) -> str | None:
+    """Ссылка «Работает на TeleSlot» внизу страницы записи: клиенты бизнеса сами бывают владельцами, это наш самый дешёвый канал.
+    Метка ref_<id> попадает в platform_visitors.source, так видно, чья страница привела человека. Платный бизнес надпись не показывает
+    (убрать её — часть подписки); сам платформенный бот ссылку на себя не рисует."""
+    if business["id"] == PLATFORM_BUSINESS_ID:
+        return None
+    if billing.subscription_status(business)[0] in ("active", "expiring"):
+        return None
+    return f"{bot_setup.bot_link(PLATFORM_BOT_USERNAME)}?start=ref_{business['id']}"
+
+
 @app.get("/api/config")
 def api_config(business_id: int | None = None):
     business = resolve_business(business_id)
@@ -502,6 +513,7 @@ def api_config(business_id: int | None = None):
         "privacy_url": business["privacy_url"],
         # Пробный период или подписка закончились: клиентам запись не показываем, владельцу — подсказку, куда платить.
         "suspended": suspended,
+        "powered_by_link": powered_by_link(business),
         "platform_link": bot_setup.bot_link(platform["bot_username"]) if platform and platform.get("bot_username") else None,
     }
 

@@ -49,6 +49,9 @@ PLATFORM_BUSINESS_ID = int(os.getenv("PLATFORM_BUSINESS_ID", "1"))
 # Оплата подписки TeleSlot внутри платформенного бота (Telegram Payments + ЮKassa).
 # Токен платёжного провайдера выдаёт @BotFather для бота TeleSlot (Payments -> ЮKassa); сначала тестовый,
 # потом боевой (содержит :LIVE:). Пока токен не задан, кнопка «Оформить подписку» ведёт в поддержку.
+# Платформенный бот для ссылки «Работает на TeleSlot» внизу страницы записи (у бизнеса №1 в базе username может быть пуст).
+PLATFORM_BOT_USERNAME = os.getenv("PLATFORM_BOT_USERNAME", "teleslotapp_bot")
+
 PAYMENT_PROVIDER_TOKEN = os.getenv("PAYMENT_PROVIDER_TOKEN", "")
 SUBSCRIPTION_PRICE_RUB = int(os.getenv("SUBSCRIPTION_PRICE_RUB", "990"))
 SUBSCRIPTION_DAYS = int(os.getenv("SUBSCRIPTION_DAYS", "30"))

@@ -370,6 +370,24 @@ function switchMode(mode) {
 // КЛИЕНТСКИЙ РЕЖИМ
 // ======================================================================
 
+// Ссылка «Работает на TeleSlot»: сервер отдаёт её только бесплатным бизнесам (у платных её нет).
+function setupPoweredBy() {
+  const link = el("powered-by");
+  const url = state.config.powered_by_link;
+  if (!url || !/^https:\/\/t\.me\//.test(url)) {
+    link.classList.add("hidden");
+    return;
+  }
+  link.href = url;
+  link.classList.remove("hidden");
+  link.onclick = (event) => {
+    if (tg && tg.openTelegramLink) {
+      event.preventDefault();
+      tg.openTelegramLink(url);
+    }
+  };
+}
+
 async function loadServices() {
   state.services = await api(`/api/services?${qs({ business_id: state.businessId })}`);
   el("business-title").textContent = state.config.business_name || "Выберите услугу";
@@ -382,6 +400,7 @@ async function loadServices() {
     el("services-list").innerHTML = "";
     return;
   }
+  setupPoweredBy();
   emptyMsg.textContent = state.isOwner
     ? "Пока нет ни одной услуги. Добавьте их во вкладке «Управление», раздел «Позиции»."
     : "Запись скоро откроется — владелец ещё настраивает услуги. Загляните позже!";
